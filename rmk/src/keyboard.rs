@@ -185,6 +185,18 @@ impl Runnable for Keyboard<'_> {
     }
 }
 
+/// Keys a keyboard can hold at once beyond the modifiers. Any 42- to 64-key
+/// board fits; past it the newest press is dropped.
+const HELD_KEYS_MAX: usize = 32;
+
+/// A held key and the press that registered it, which locates its release.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+struct PressedKey {
+    key: HidKeyCode,
+    event: KeyboardEvent,
+}
+
 pub struct Keyboard<'a> {
     /// Keymap
     pub(crate) keymap: &'a KeyMap<'a>,
@@ -242,12 +254,10 @@ pub struct Keyboard<'a> {
     /// The held modifiers for the keyboard hid report
     held_modifiers: ModifierCombination,
 
-    /// The held keys for the keyboard hid report, except the modifiers
-    held_keycodes: [HidKeyCode; 6],
-
-    /// Registered key position.
-    /// This is still needed besides `held_keycodes` because multiple keys with same keycode can be registered.
-    registered_keys: [Option<KeyboardEvent>; 6],
+    /// The held keys, except the modifiers, in the order they were pressed.
+    /// The keyboard report carries the first six; one held past them is kept
+    /// until a slot frees, so a seventh key is never lost.
+    held_keys: Vec<PressedKey, HELD_KEYS_MAX>,
 
     /// Mouse state (report, acceleration, repeat counters, repeat deadlines)
     mouse: MouseState,
@@ -288,9 +298,8 @@ impl<'a> Keyboard<'a> {
             fork_keep_mask: ModifierCombination::default(),
             unprocessed_events: Vec::new(),
             held_buffer: HeldBuffer::new(),
-            registered_keys: [None; 6],
             held_modifiers: ModifierCombination::default(),
-            held_keycodes: [HidKeyCode::No; 6],
+            held_keys: Vec::new(),
             mouse: MouseState::new(),
             media_report: MediaKeyboardReport { usage_id: 0 },
             system_control_report: SystemControlReport { usage_id: 0 },
@@ -1893,13 +1902,17 @@ impl<'a> Keyboard<'a> {
     pub(crate) fn build_keyboard_report(&mut self, pressed: bool) -> KeyboardReport {
         let modifiers = self.resolve_modifiers(pressed);
         info!(
-            "Sending keyboard report, modifiers: {:?}, keycodes: {:?}",
-            modifiers, &self.held_keycodes,
+            "Sending keyboard report, modifiers: {:?}, held keys: {}",
+            modifiers,
+            self.held_keys.len(),
         );
         let mut keycodes = [0u8; 6];
         let mut n = 0;
-        for k in self.held_keycodes {
-            let code = k as u8;
+        for held in &self.held_keys {
+            let code = held.key as u8;
+            if n == keycodes.len() {
+                break;
+            }
             if code != 0 && !keycodes[..n].contains(&code) {
                 keycodes[n] = code;
                 n += 1;
@@ -1962,19 +1975,31 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// The earliest-pressed key still held, or `No` when none is.
+    #[cfg(test)]
+    fn first_held_keycode(&self) -> HidKeyCode {
+        self.held_keys.first().map_or(HidKeyCode::No, |held| held.key)
+    }
+
+    /// Whether `key` is among the held keys.
+    #[cfg(test)]
+    fn holds(&self, key: HidKeyCode) -> bool {
+        self.held_keys.iter().any(|held| held.key == key)
+    }
+
     /// Register a key to be sent in hid report.
     fn register_keycode(&mut self, key: HidKeyCode, event: KeyboardEvent) {
-        // First, find the key event slot according to the position, then the first
-        // free slot.
-        let slot = self
-            .registered_keys
-            .iter()
-            .position(|k| k.is_some_and(|e| e.pos == event.pos))
-            .or_else(|| self.held_keycodes.iter().position(|&k| k == HidKeyCode::No));
-
-        if let Some(slot) = slot {
-            self.held_keycodes[slot] = key;
-            self.registered_keys[slot] = Some(event);
+        // `No` holds nothing, as a free slot did; it frees its position.
+        if key == HidKeyCode::No {
+            self.held_keys.retain(|held| held.event.pos != event.pos);
+            return;
+        }
+        // A position already held changes its key in place; a new one joins the
+        // end. Past HELD_KEYS_MAX keys the newest is dropped.
+        if let Some(held) = self.held_keys.iter_mut().find(|held| held.event.pos == event.pos) {
+            *held = PressedKey { key, event };
+        } else if self.held_keys.push(PressedKey { key, event }).is_err() {
+            warn!("More than {} keys held; dropping {:?}", HELD_KEYS_MAX, key);
         }
     }
 
@@ -1984,22 +2009,17 @@ impl<'a> Keyboard<'a> {
         // registered under the triggering key's pos, so a pos-only match can hit a
         // slot that holds a different keycode — and clear the wrong combo output,
         // leaving the intended one stuck on the host.
-        let slot = self.registered_keys.iter().enumerate().find_map(|(i, k)| {
-            if let Some(e) = k
-                && event.pos == e.pos
-                && self.held_keycodes[i] == key
-            {
-                return Some(i);
-            }
-            None
-        });
+        let slot = self
+            .held_keys
+            .iter()
+            .position(|held| held.event.pos == event.pos && held.key == key);
 
-        // Fall back to any slot holding the same keycode.
-        let slot = slot.or_else(|| self.held_keycodes.iter().position(|&k| k == key));
+        // Fall back to any held key with the same keycode.
+        let slot = slot.or_else(|| self.held_keys.iter().position(|held| held.key == key));
 
         if let Some(index) = slot {
-            self.held_keycodes[index] = HidKeyCode::No;
-            self.registered_keys[index] = None;
+            // `remove` keeps the press order the report is built from.
+            self.held_keys.remove(index);
         }
     }
 
@@ -2164,7 +2184,7 @@ mod test {
         let main = async {
             let mut keyboard = create_test_keyboard();
             keyboard.register_key(HidKeyCode::A, KeyboardEvent::key(2, 1, true));
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::A);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::A);
         };
         block_on(main);
     }
@@ -2176,11 +2196,11 @@ mod test {
 
             // Press A key
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Grave); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Grave); // A key's HID code is 0x04
 
             // Release A key
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
         };
         block_on(main);
     }
@@ -2210,23 +2230,17 @@ mod test {
             let mut keyboard = create_test_keyboard();
 
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert!(keyboard.held_keycodes.contains(&HidKeyCode::Grave));
+            assert!(keyboard.holds(HidKeyCode::Grave));
 
             keyboard.process_inner(KeyboardEvent::key(1, 0, true)).await;
-            assert!(
-                keyboard.held_keycodes.contains(&HidKeyCode::Grave)
-                    && keyboard.held_keycodes.contains(&HidKeyCode::Tab)
-            );
+            assert!(keyboard.holds(HidKeyCode::Grave) && keyboard.holds(HidKeyCode::Tab));
 
             keyboard.process_inner(KeyboardEvent::key(1, 0, false)).await;
-            assert!(
-                keyboard.held_keycodes.contains(&HidKeyCode::Grave)
-                    && !keyboard.held_keycodes.contains(&HidKeyCode::Tab)
-            );
+            assert!(keyboard.holds(HidKeyCode::Grave) && !keyboard.holds(HidKeyCode::Tab));
 
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
-            assert!(!keyboard.held_keycodes.contains(&HidKeyCode::Grave));
-            assert!(keyboard.held_keycodes.iter().all(|&k| k == HidKeyCode::No));
+            assert!(!keyboard.holds(HidKeyCode::Grave));
+            assert!(keyboard.first_held_keycode() == HidKeyCode::No);
         };
 
         block_on(main);
@@ -2244,31 +2258,31 @@ mod test {
 
             // first press ever of the Again issues KeyCode:No
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No); // A key's HID code is 0x04
 
             // Press A key
             keyboard.process_inner(KeyboardEvent::key(2, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Escape); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Escape); // A key's HID code is 0x04
 
             // Release A key
             keyboard.process_inner(KeyboardEvent::key(2, 0, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // after another key is pressed, that key is repeated
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Escape); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Escape); // A key's HID code is 0x04
 
             // releasing the repeat key
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No); // A key's HID code is 0x04
 
             // Press S key
             keyboard.process_inner(KeyboardEvent::key(1, 2, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::W); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::W); // A key's HID code is 0x04
 
             // after another key is pressed, that key is repeated
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::W); // A key's HID code is 0x04
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::W); // A key's HID code is 0x04
         };
         block_on(main);
     }
@@ -2301,17 +2315,17 @@ mod test {
             // first press ever of the Again issues KeyCode:No
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
             keyboard.send_keyboard_report_with_resolved_modifiers(true).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             // Release F
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
 
             // Press A key
             keyboard.process_inner(KeyboardEvent::key(2, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::A);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::A);
 
             // Release A key
             keyboard.process_inner(KeyboardEvent::key(2, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // Release F
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
@@ -2326,19 +2340,19 @@ mod test {
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
             force_timeout_first_hold(&mut keyboard).await;
 
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::A);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::A);
 
             // releasing the repeat key
             keyboard.process_inner(KeyboardEvent::key(0, 0, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // Press S key
             keyboard.process_inner(KeyboardEvent::key(2, 2, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::S);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::S);
 
             // after another key is pressed, that key is repeated
             keyboard.process_inner(KeyboardEvent::key(0, 0, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::S);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::S);
         };
         block_on(main);
     }
@@ -2353,11 +2367,11 @@ mod test {
 
             // Press Transparent key (Q on lower layer)
             keyboard.process_inner(KeyboardEvent::key(1, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Q); // Q key's HID code is 0x14
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Q); // Q key's HID code is 0x14
 
             // Release Transparent key
             keyboard.process_inner(KeyboardEvent::key(1, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
         };
         block_on(main);
     }
@@ -2369,11 +2383,11 @@ mod test {
 
             // Press No key
             keyboard.process_inner(KeyboardEvent::key(4, 3, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // Release No key
             keyboard.process_inner(KeyboardEvent::key(4, 3, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
         };
         block_on(main);
     }
@@ -2422,11 +2436,11 @@ mod test {
 
             // Press Dot key, by itself it should emit '.'
             keyboard.process_inner(KeyboardEvent::key(3, 9, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Dot);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Dot);
 
             // Release Dot key
             keyboard.process_inner(KeyboardEvent::key(3, 9, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // Press LShift key
             keyboard.process_inner(KeyboardEvent::key(3, 0, true)).await;
@@ -2437,11 +2451,11 @@ mod test {
                 keyboard.resolve_modifiers(true),
                 ModifierCombination::new().with_left_shift(true)
             );
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Semicolon);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Semicolon);
 
             //Release Dot key
             keyboard.process_inner(KeyboardEvent::key(3, 9, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(
                 keyboard.resolve_modifiers(false),
                 ModifierCombination::new().with_left_shift(true)
@@ -2454,11 +2468,11 @@ mod test {
 
             // Press Comma key, by itself it should emit ','
             keyboard.process_inner(KeyboardEvent::key(3, 8, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Comma);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Comma);
 
             // Release Dot key
             keyboard.process_inner(KeyboardEvent::key(3, 8, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
 
             // Press LShift key
             keyboard.process_inner(KeyboardEvent::key(3, 0, true)).await;
@@ -2466,11 +2480,11 @@ mod test {
             // Press Comma key, with shift it should emit ';' (shift is suppressed)
             keyboard.process_inner(KeyboardEvent::key(3, 8, true)).await;
             assert_eq!(keyboard.resolve_modifiers(true), ModifierCombination::new());
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::Semicolon);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::Semicolon);
 
             // Release Comma key, shift is still held
             keyboard.process_inner(KeyboardEvent::key(3, 8, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(
                 keyboard.resolve_modifiers(false),
                 ModifierCombination::new().with_left_shift(true)
@@ -2534,12 +2548,12 @@ mod test {
 
             // Press Z key, by itself it should emit 'MouseBtn5'
             keyboard.process_inner(KeyboardEvent::key(3, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(keyboard.mouse.report.buttons, 1u8 << 4); // MouseBtn5
 
             // Release Z key
             keyboard.process_inner(KeyboardEvent::key(3, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(keyboard.mouse.report.buttons, 0);
 
             // Press LCtrl key
@@ -2557,12 +2571,12 @@ mod test {
                 keyboard.resolve_modifiers(true),
                 ModifierCombination::new().with_left_shift(true)
             );
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::C);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::C);
             assert_eq!(keyboard.mouse.report.buttons, 0);
 
             // Release 'Z' key, suppression of ctrl is removed
             keyboard.process_inner(KeyboardEvent::key(3, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(
                 keyboard.resolve_modifiers(false),
                 ModifierCombination::new().with_left_ctrl(true).with_left_shift(true)
@@ -2581,11 +2595,11 @@ mod test {
 
             // Press 'A' key, by itself it should emit 'S'
             keyboard.process_inner(KeyboardEvent::key(2, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::S);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::S);
 
             // Release 'A' key
             keyboard.process_inner(KeyboardEvent::key(2, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(keyboard.resolve_modifiers(false), ModifierCombination::new());
             assert_eq!(keyboard.mouse.report.buttons, 0);
 
@@ -2596,20 +2610,20 @@ mod test {
 
             // Press Z key, by itself it should emit 'MouseBtn5'
             keyboard.process_inner(KeyboardEvent::key(3, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
             assert_eq!(keyboard.mouse.report.buttons, 1u8 << 4); // MouseBtn5 //this fails, but ok in debug - why?
 
             // Press 'A' key, with 'MouseBtn5' it should emit 'D'
             keyboard.process_inner(KeyboardEvent::key(2, 1, true)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::D);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::D);
 
             // Release Z (MouseBtn1) key, 'D' is still held
             keyboard.process_inner(KeyboardEvent::key(3, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::D);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::D);
 
             // Release 'A' key -> releases 'D'
             keyboard.process_inner(KeyboardEvent::key(2, 1, false)).await;
-            assert_eq!(keyboard.held_keycodes[0], HidKeyCode::No);
+            assert_eq!(keyboard.first_held_keycode(), HidKeyCode::No);
         };
 
         block_on(main);

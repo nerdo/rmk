@@ -1,0 +1,47 @@
+# Held keys beyond the keyboard report's six slots.
+#
+# Spec: a key held while six others are held is never lost; it reaches the
+# host as soon as a slot frees (user request, 2026-11-08, for keypresses that
+# must always register). Every key change sends the current report, as RMK
+# already does, so the seventh press repeats the six-key report.
+#
+# Plain letters on the shared board's row 2:
+#   V (2,3)  B (2,4)  N (2,5)  D (2,6)  M (2,7)  L (2,10)  X (2,11)
+
+keyboard = "boards/split.toml"
+
+# Release the first of seven held keys: the seventh takes the free slot.
+[[test]]
+name = "a_seventh_held_key_is_sent_once_one_of_the_first_six_is_released"
+steps = [
+  { press = [2, 3] },
+  { press = [2, 4] },
+  { press = [2, 5] },
+  { press = [2, 6] },
+  { press = [2, 7] },
+  { press = [2, 10] },
+  { press = [2, 11] },
+  { release = [2, 3] },
+  { release = [2, 4] },
+  { release = [2, 5] },
+  { release = [2, 6] },
+  { release = [2, 7] },
+  { release = [2, 10] },
+  { release = [2, 11] },
+]
+expect = [
+  ["V"],
+  ["V", "B"],
+  ["V", "B", "N"],
+  ["V", "B", "N", "D"],
+  ["V", "B", "N", "D", "M"],
+  ["V", "B", "N", "D", "M", "L"],
+  ["V", "B", "N", "D", "M", "L"],
+  ["B", "N", "D", "M", "L", "X"],
+  ["N", "D", "M", "L", "X"],
+  ["D", "M", "L", "X"],
+  ["M", "L", "X"],
+  ["L", "X"],
+  ["X"],
+  [],
+]
