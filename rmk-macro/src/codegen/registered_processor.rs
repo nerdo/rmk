@@ -31,48 +31,70 @@ pub(crate) fn expand_registered_processor_init(
             let syn::Item::Fn(item_fn) = item else {
                 continue;
             };
-            let Some(attr) = item_fn
-                .attrs
-                .iter()
-                .find(|a| a.path().is_ident("register_processor"))
-            else {
-                continue;
-            };
-
-            let (custom_init, custom_exec) = expand_custom_processor(item_fn);
-            let mut mode: Option<bool> = None; // Some(true) = event, Some(false) = poll
-
-            attr.parse_nested_meta(|meta| {
-                let is_event = meta.path.is_ident("event");
-                let is_poll = meta.path.is_ident("poll");
-
-                if !is_event && !is_poll {
-                    return Err(meta.error("expected `event` or `poll`"));
-                }
-                if mode.is_some() {
-                    return Err(meta.error("cannot specify multiple modes"));
-                }
-                mode = Some(is_event);
-                Ok(())
-            })
-            .unwrap_or_else(|e| panic!("#[register_processor] {e}"));
-
-            let executor = match mode {
-                Some(true) => quote! {
-                    async { use ::rmk::processor::Processor; #custom_exec.process_loop().await }
-                },
-                Some(false) => quote! {
-                    async { use ::rmk::processor::PollingProcessor; #custom_exec.polling_loop().await }
-                },
-                None => panic!("#[register_processor] requires `event` or `poll` argument"),
-            };
-
-            initializers.extend(custom_init);
-            executors.push(executor);
+            if let Some((init, executor)) = expand_registered_fn(item_fn) {
+                initializers.extend(init);
+                executors.push(executor);
+            }
         }
     }
 
     (initializers, executors)
+}
+
+/// How a registered processor's task runs.
+enum Mode {
+    /// `Processor::process_loop`: react to subscribed events.
+    Event,
+    /// `PollingProcessor::polling_loop`: events plus a fixed poll interval.
+    Poll,
+    /// The processor's own `Runnable::run`, for processors such as
+    /// `DisplayProcessor` whose run loop does more than either of the above.
+    Run,
+}
+
+/// The initializer and the executor for one `#[register_processor(..)]` fn,
+/// or `None` when the fn carries no such attribute.
+fn expand_registered_fn(item_fn: &syn::ItemFn) -> Option<(TokenStream, TokenStream)> {
+    let attr = item_fn
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("register_processor"))?;
+
+    let (custom_init, custom_exec) = expand_custom_processor(item_fn);
+    let mut mode: Option<Mode> = None;
+
+    attr.parse_nested_meta(|meta| {
+        let parsed = if meta.path.is_ident("event") {
+            Mode::Event
+        } else if meta.path.is_ident("poll") {
+            Mode::Poll
+        } else if meta.path.is_ident("run") {
+            Mode::Run
+        } else {
+            return Err(meta.error("expected `event`, `poll` or `run`"));
+        };
+        if mode.is_some() {
+            return Err(meta.error("cannot specify multiple modes"));
+        }
+        mode = Some(parsed);
+        Ok(())
+    })
+    .unwrap_or_else(|e| panic!("#[register_processor] {e}"));
+
+    let executor = match mode {
+        Some(Mode::Event) => quote! {
+            async { use ::rmk::processor::Processor; #custom_exec.process_loop().await }
+        },
+        Some(Mode::Poll) => quote! {
+            async { use ::rmk::processor::PollingProcessor; #custom_exec.polling_loop().await }
+        },
+        Some(Mode::Run) => quote! {
+            async { use ::rmk::core_traits::Runnable; #custom_exec.run().await }
+        },
+        None => panic!("#[register_processor] requires `event`, `poll` or `run` argument"),
+    };
+
+    Some((custom_init, executor))
 }
 
 fn expand_light_indicator_processors(hardware: &Hardware) -> (TokenStream, Vec<TokenStream>) {
@@ -175,4 +197,29 @@ fn expand_custom_processor(fn_item: &syn::ItemFn) -> (TokenStream, &syn::Ident) 
     };
 
     (initializer, task_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_registered_fn;
+
+    // Spec: rmk/src/display/mod.rs `impl Runnable for DisplayProcessor` (tag
+    // rmk-v0.9.0): DisplayProcessor primes, coalesces and polls its renders in
+    // its own `run`, which neither `event` nor `poll` mode calls.
+    // "A `run` processor's task is its own Runnable::run."
+    #[test]
+    fn run_mode_runs_the_processor_through_runnable_run() {
+        let item: syn::ItemFn = syn::parse_quote! {
+            #[register_processor(run)]
+            fn display() -> MyDisplay {
+                MyDisplay::new()
+            }
+        };
+        let (_, executor) = expand_registered_fn(&item).expect("a registered processor");
+        let executor = executor.to_string();
+        assert!(
+            executor.contains("use :: rmk :: core_traits :: Runnable ; display . run () . await"),
+            "unexpected executor: {executor}"
+        );
+    }
 }
