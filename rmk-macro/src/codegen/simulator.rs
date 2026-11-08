@@ -113,6 +113,8 @@ fn expand_file(path: &Path) -> Result<TokenStream2, String> {
         })
         .transpose()?;
 
+    let rynk_import =
+        uses_rynk(&doc).then(|| quote! { #[cfg(feature = "rynk")] use crate::rynk::RynkSim as _; });
     let tests = expand_scenario(doc, base.as_deref())?;
     let stem = path.file_stem().and_then(|s| s.to_str());
     let stem = stem.expect("scenario paths are UTF-8 and name a file");
@@ -129,10 +131,29 @@ fn expand_file(path: &Path) -> Result<TokenStream2, String> {
 
     Ok(quote! {
         mod #mod_name {
+            #rynk_import
             #(#tracked)*
             #(#tests)*
         }
     })
+}
+
+/// Whether any step of any `[[test]]` is a Rynk step, whose harness methods
+/// live on `crate::rynk::RynkSim` in rmk's own integration tests.
+fn uses_rynk(doc: &Table) -> bool {
+    let Some(Value::Array(tests)) = doc.get("test") else {
+        return false;
+    };
+    tests
+        .iter()
+        .filter_map(|t| t.get("steps")?.as_array())
+        .flatten()
+        .any(|step| {
+            step.as_table().is_some_and(|step| {
+                step.keys()
+                    .any(|k| matches!(k.as_str(), "rynk" | "rynk_topic" | "rynk_publish"))
+            })
+        })
 }
 
 /// Expand every `[[test]]` of a scenario whose `keyboard = "path"` reference is
@@ -300,7 +321,7 @@ fn expand_builder(
         quote! { [#(#hands),*] }
     });
     quote! {
-        crate::simulator::SimKeyboard::builder::<#rows, #cols, #layers>([#(#layer_tokens),*])
+        ::rmk::simulator::SimKeyboard::builder::<#rows, #cols, #layers>([#(#layer_tokens),*])
             .behavior_config(behavior_config)
             #encoder_call
             #rmk_config

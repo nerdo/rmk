@@ -22,7 +22,7 @@ use rmk_types::led_indicator::LedIndicator;
 use rmk_types::protocol::rynk::command::Endpoint;
 use rmk_types::protocol::rynk::{Cmd, RynkError, RynkHeader, command, encode_frame};
 
-use crate::simulator::SimKeyboard;
+use rmk::simulator::SimKeyboard;
 
 /// What a scenario expects back from one Rynk request.
 pub(crate) enum RynkReply<'a> {
@@ -31,9 +31,17 @@ pub(crate) enum RynkReply<'a> {
     Err(RynkError),
 }
 
-impl SimKeyboard {
+/// Rynk exchanges on top of the harness; a trait because `SimKeyboard` lives
+/// in the rmk library. Generated scenarios import it when they use Rynk steps.
+pub(crate) trait RynkSim {
+    fn rynk<E: Endpoint>(&mut self, request: &str, reply: RynkReply<'_>) -> &mut Self;
+    fn rynk_topic(&mut self, cmd: Cmd, json: &str) -> &mut Self;
+    fn rynk_publish(&mut self, cmd: Cmd, json: &str) -> &mut Self;
+}
+
+impl RynkSim for SimKeyboard {
     /// Send one endpoint request, spelled as JSON for its `Request` type.
-    pub(crate) fn rynk<E: Endpoint>(&mut self, request: &str, reply: RynkReply<'_>) -> &mut Self {
+    fn rynk<E: Endpoint>(&mut self, request: &str, reply: RynkReply<'_>) -> &mut Self {
         let request = frame(E::CMD, 1, &payload::<E::Request>(request, "request"));
         match reply {
             RynkReply::Ok(response) => {
@@ -47,7 +55,7 @@ impl SimKeyboard {
     /// Assert the device's next frame is this topic push. Topics carry a bare
     /// payload at seq 0, not a `Result`. The topic table has no marker types, so
     /// `cmd` names the payload type here, the way it names the event below.
-    pub(crate) fn rynk_topic(&mut self, cmd: Cmd, json: &str) -> &mut Self {
+    fn rynk_topic(&mut self, cmd: Cmd, json: &str) -> &mut Self {
         let expected = match cmd {
             Cmd::LayerChange => frame(cmd, 0, &payload::<u8>(json, "topic")),
             Cmd::WpmUpdate => frame(cmd, 0, &payload::<u16>(json, "topic")),
@@ -64,7 +72,7 @@ impl SimKeyboard {
     /// Publish the internal event `cmd`'s topic forwards, to cause its push. Only
     /// the topics fed by state a timeline cannot otherwise reach need this;
     /// `LayerChange` is caused by pressing a layer key.
-    pub(crate) fn rynk_publish(&mut self, cmd: Cmd, json: &str) -> &mut Self {
+    fn rynk_publish(&mut self, cmd: Cmd, json: &str) -> &mut Self {
         match cmd {
             Cmd::WpmUpdate => self.publish(publish_event_async(WpmUpdateEvent(payload(json, "topic")))),
             Cmd::SleepState => self.publish(publish_event_async(SleepStateEvent(payload(json, "topic")))),
@@ -102,7 +110,7 @@ fn keymap_write_survives_restart() {
     const SET_KEY_B: &str = r#"{"position":{"layer":0,"row":0,"col":0},"action":{"Single":{"Key":{"Hid":"B"}}}}"#;
 
     test_block_on(async {
-        let flash = crate::simulator::flash::InMemoryFlash::new();
+        let flash = rmk::simulator::flash::InMemoryFlash::new();
         {
             let mut keyboard = SimKeyboard::builder([[[k!(A)]]]).build_with_flash(flash.clone()).await;
             keyboard

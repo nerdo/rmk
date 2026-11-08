@@ -119,11 +119,15 @@ pub mod usb;
 pub mod watchdog;
 
 // Test-only helpers for `#[cfg(test)]` modules under `src/` and for the
-// simulator harness in `tests/integration/simulator`; never part of a firmware
-// build.
+// simulator harness in `simulator`; never part of a firmware build.
 #[cfg(any(test, feature = "std"))]
 #[doc(hidden)]
 pub mod test_support;
+
+// The harness `run_tests!` scenarios run on; std-only, never in firmware.
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub mod simulator;
 
 pub async fn initialize_keymap<
     'a,

@@ -30,6 +30,12 @@ impl InMemoryFlash {
     }
 }
 
+impl Default for InMemoryFlash {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ErrorType for InMemoryFlash {
     type Error = NorFlashErrorKind;
 }

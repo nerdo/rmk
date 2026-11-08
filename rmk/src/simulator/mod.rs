@@ -5,8 +5,9 @@
 //! protocol services. It stops at RMK's transport boundaries — no USB
 //! enumeration, BLE radio state, or GPIO electrical behavior.
 //!
-//! Lives in the test crate, so it drives only rmk's public API (plus the
-//! `#[doc(hidden)]` `rmk::test_support` gate for a few internal signals).
+//! Built with the `std` feature only, so it never reaches a firmware build.
+//! Public so a keyboard crate outside RMK can run `run_tests!` scenarios
+//! against the same RMK source its firmware builds from.
 
 #[cfg(feature = "storage")]
 pub mod flash;
@@ -24,21 +25,21 @@ use embedded_storage::nor_flash::NorFlash;
 // Every `_no_usb` chip feature also turns on `_ble`, so exactly one report
 // channel always exists.
 #[cfg(feature = "_no_usb")]
-use rmk::channel::BLE_REPORT_CHANNEL as REPORT_CHANNEL;
+use crate::channel::BLE_REPORT_CHANNEL as REPORT_CHANNEL;
 #[cfg(not(feature = "_no_usb"))]
-use rmk::channel::USB_REPORT_CHANNEL as REPORT_CHANNEL;
+use crate::channel::USB_REPORT_CHANNEL as REPORT_CHANNEL;
 #[cfg(feature = "host")]
-use rmk::config::RmkConfig;
+use crate::config::RmkConfig;
 #[cfg(feature = "storage")]
-use rmk::config::StorageConfig;
-use rmk::config::{BehaviorConfig, Hand, PositionalConfig};
-use rmk::core_traits::Runnable;
-use rmk::event::{AsyncEventPublisher, AsyncPublishableEvent, KeyboardEvent, KeyboardEventPos};
-use rmk::hid::{KeyboardReport, Report};
-use rmk::input_device::rotary_encoder::Direction;
-use rmk::keyboard::Keyboard;
-use rmk::keymap::{KeyMap, KeymapData};
-use rmk::types::action::{EncoderAction, KeyAction};
+use crate::config::StorageConfig;
+use crate::config::{BehaviorConfig, Hand, PositionalConfig};
+use crate::core_traits::Runnable;
+use crate::event::{AsyncEventPublisher, AsyncPublishableEvent, KeyboardEvent, KeyboardEventPos};
+use crate::hid::{KeyboardReport, Report};
+use crate::input_device::rotary_encoder::Direction;
+use crate::keyboard::Keyboard;
+use crate::keymap::{KeyMap, KeymapData};
+use crate::types::action::{EncoderAction, KeyAction};
 use rmk_types::keycode::HidKeyCode;
 
 const TIMEOUT_SECS: u64 = 5;
@@ -61,19 +62,19 @@ fn reset() {
         .expect("free publisher slot at reset")
         .clear();
 
-    rmk::test_support::reset_connection_status();
+    crate::test_support::reset_connection_status();
     #[cfg(not(feature = "_no_usb"))]
-    rmk::state::set_usb_state(rmk_types::connection::UsbState::Configured);
+    crate::state::set_usb_state(rmk_types::connection::UsbState::Configured);
     #[cfg(feature = "_no_usb")]
-    rmk::test_support::set_ble_state(rmk_types::ble::BleState::Connected);
+    crate::test_support::set_ble_state(rmk_types::ble::BleState::Connected);
 
     #[cfg(not(feature = "_no_usb"))]
-    rmk::channel::USB_REPORT_CHANNEL.clear();
+    crate::channel::USB_REPORT_CHANNEL.clear();
     #[cfg(feature = "_ble")]
-    rmk::channel::BLE_REPORT_CHANNEL.clear();
+    crate::channel::BLE_REPORT_CHANNEL.clear();
 
     #[cfg(feature = "storage")]
-    rmk::test_support::clear_flash_channel();
+    crate::test_support::clear_flash_channel();
 }
 
 pub struct SimKeyboardBuilder<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize> {
@@ -142,7 +143,7 @@ impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCOD
     #[cfg(feature = "storage")]
     pub async fn build_with_flash<F: NorFlash + 'static>(self, flash: F) -> SimKeyboard {
         let data = Box::leak(Box::new(KeymapData::new_with_encoder(self.keymap, self.encoder_map)));
-        let (keymap, mut storage) = rmk::initialize_keymap_and_storage(
+        let (keymap, mut storage) = crate::initialize_keymap_and_storage(
             data,
             BlockingAsync::new(flash),
             &StorageConfig::default(),
@@ -281,13 +282,13 @@ impl SimKeyboard {
     }
 
     /// Send `request` to the device's host session and assert its reply.
-    pub(crate) fn host_exchange(&mut self, request: impl Into<Vec<u8>>, expected: impl Into<Vec<u8>>) -> &mut Self {
+    pub fn host_exchange(&mut self, request: impl Into<Vec<u8>>, expected: impl Into<Vec<u8>>) -> &mut Self {
         self.host_send(request).expect_host_frame(expected)
     }
 
     /// Send bytes to the host session without reading a reply. Nothing frames or
     /// validates them, so a scenario can feed the session garbage.
-    pub(crate) fn host_send(&mut self, request: impl Into<Vec<u8>>) -> &mut Self {
+    pub fn host_send(&mut self, request: impl Into<Vec<u8>>) -> &mut Self {
         self.steps.push(SimStep::HostSend(request.into()));
         self
     }
@@ -295,13 +296,13 @@ impl SimKeyboard {
     /// Assert the device's next `expected.len()` reply bytes are exactly these.
     /// Length-driven rather than delimited, because Vial replies are fixed-size
     /// raw reports while Rynk's are COBS frames.
-    pub(crate) fn expect_host_frame(&mut self, expected: impl Into<Vec<u8>>) -> &mut Self {
+    pub fn expect_host_frame(&mut self, expected: impl Into<Vec<u8>>) -> &mut Self {
         self.steps.push(SimStep::ExpectHostFrame(expected.into()));
         self
     }
 
     /// Assert the device stays silent for `ms`.
-    pub(crate) fn expect_no_host_reply(&mut self, ms: u64) -> &mut Self {
+    pub fn expect_no_host_reply(&mut self, ms: u64) -> &mut Self {
         self.steps.push(SimStep::ExpectNoHostReply(Duration::from_millis(ms)));
         self
     }
@@ -309,7 +310,7 @@ impl SimKeyboard {
     /// Queue an internal event for the timeline to publish. Topic pushes whose
     /// cause no matrix input reaches need this.
     #[cfg(feature = "rynk")]
-    pub(crate) fn publish(&mut self, event: impl Future<Output = ()> + 'static) -> &mut Self {
+    pub fn publish(&mut self, event: impl Future<Output = ()> + 'static) -> &mut Self {
         self.steps.push(SimStep::Publish(Box::pin(event)));
         self
     }
@@ -361,7 +362,7 @@ impl SimKeyboard {
         let flash = async {
             match storage {
                 Some(storage) => storage.await,
-                None => rmk::channel::drain_flash_channel_for_test().await,
+                None => crate::channel::drain_flash_channel_for_test().await,
             }
         };
 
@@ -375,7 +376,7 @@ impl SimKeyboard {
             if !has_host_step {
                 return core::future::pending().await;
             }
-            let service = rmk::host::HostService::new(keymap, rmk_config);
+            let service = crate::host::HostService::new(keymap, rmk_config);
             let (mut rx, mut tx): (&Link, &Link) = (&to_device, &from_device);
             service.run_session(&mut rx, &mut tx).await;
         };
@@ -459,7 +460,7 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
             }
             SimStep::HostSend(request) => {
                 #[cfg(feature = "storage")]
-                rmk::test_support::reset_flash_operation();
+                crate::test_support::reset_flash_operation();
                 let blocked = format!(
                     "host request of {} bytes blocked for {TIMEOUT_SECS}s: {}",
                     request.len(),
@@ -509,11 +510,11 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
             #[cfg(feature = "storage")]
             SimStep::WaitStorage => {
                 let waiting = format!("no storage write within {TIMEOUT_SECS}s");
-                let written = with_timeout(rmk::test_support::flash_operation_finished(), &waiting).await;
+                let written = with_timeout(crate::test_support::flash_operation_finished(), &waiting).await;
                 assert!(written, "storage write failed");
             }
             #[cfg(feature = "passkey_entry")]
-            SimStep::BeginPasskeyEntry => rmk::ble::passkey::begin_passkey_entry_session(),
+            SimStep::BeginPasskeyEntry => crate::ble::passkey::begin_passkey_entry_session(),
             #[cfg(feature = "passkey_entry")]
             SimStep::ExpectPasskeyResponse(expected) => {
                 // A scenario spells the cancelled response `"cancelled"`.
@@ -527,7 +528,7 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
                     "{at}: no passkey response within {TIMEOUT_SECS}s, expected {}",
                     render(expected)
                 );
-                let response = rmk::ble::passkey::PASSKEY_RESPONSE.wait();
+                let response = crate::ble::passkey::PASSKEY_RESPONSE.wait();
                 let actual = with_timeout(response, &waiting).await;
                 if expected != actual {
                     panic!(
@@ -538,7 +539,7 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
                 }
             }
             #[cfg(feature = "passkey_entry")]
-            SimStep::EndPasskeyEntry => rmk::ble::passkey::end_passkey_entry_session(),
+            SimStep::EndPasskeyEntry => crate::ble::passkey::end_passkey_entry_session(),
         }
     }
 
@@ -658,9 +659,10 @@ async fn with_timeout<T>(future: impl Future<Output = T>, stalled: &str) -> T {
 
 /// The harness's own guards: a scenario that forgets an assertion has to fail
 /// rather than pass quietly.
+#[cfg(test)]
 mod self_check {
-    use rmk::k;
-    use rmk::test_support::test_block_on;
+    use crate::k;
+    use crate::test_support::test_block_on;
 
     use super::{HidKeyCode, SimKeyboard};
 

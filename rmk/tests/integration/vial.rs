@@ -8,7 +8,7 @@ use rmk_types::protocol::vial::{
     SettingKey, VIA_PROTOCOL_VERSION, VIAL_EP_SIZE as REPORT, ViaCommand, VialCommand, VialDynamic,
 };
 
-use crate::simulator::SimKeyboard;
+use rmk::simulator::SimKeyboard;
 
 fn via(cmd: ViaCommand) -> [u8; REPORT] {
     let mut data = [0; REPORT];
@@ -28,7 +28,16 @@ fn dynamic(op: VialDynamic, index: u8) -> [u8; REPORT] {
     data
 }
 
-impl SimKeyboard {
+/// Vial exchanges on top of the harness; a trait because `SimKeyboard` lives
+/// in the rmk library.
+trait VialSim {
+    fn echo(&mut self, request: [u8; REPORT]);
+    fn echo_with_status(&mut self, request: [u8; REPORT]);
+    fn set_behavior(&mut self, setting: SettingKey, value: u16);
+    fn set_combo<const N: usize>(&mut self, index: u8, actions: [KeyAction; N], output: KeyAction);
+}
+
+impl VialSim for SimKeyboard {
     fn echo(&mut self, request: [u8; REPORT]) {
         self.host_exchange(request, request);
     }
@@ -195,7 +204,7 @@ fn morse_write_changes_the_tap() {
 #[test]
 fn behavior_write_survives_restart() {
     test_block_on(async {
-        let flash = crate::simulator::flash::InMemoryFlash::new();
+        let flash = rmk::simulator::flash::InMemoryFlash::new();
         {
             let mut keyboard = SimKeyboard::builder([[[k!(A), k!(B)]]])
                 .build_with_flash(flash.clone())
