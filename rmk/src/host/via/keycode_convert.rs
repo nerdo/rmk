@@ -853,6 +853,26 @@ mod test {
         assert_eq!(0xA7, to_via_keycode(a));
     }
 
+    // Spec: QMK quantum/keycodes.h@git:d194c077ed964195ec16d255c7a4b89a794cf03b
+    // leaves 0xC3-0xCC unassigned after KC_LAUNCHPAD (0xC2).
+    // "Vial stores the Globe key as basic keycode 0xC3."
+    #[test]
+    fn globe_converts_to_via_keycode_0xc3() {
+        use rmk_types::keycode::ConsumerKey;
+
+        let a = KeyAction::Single(Action::Key(KeyCode::Consumer(ConsumerKey::NextKeyboardLayoutSelect)));
+        assert_eq!(0xC3, to_via_keycode(a));
+    }
+
+    // Same source. "Vial keycode 0xC3 loads back as the Globe key."
+    #[test]
+    fn via_keycode_0xc3_converts_to_globe() {
+        assert_eq!(
+            KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::Globe))),
+            from_via_keycode(0xC3)
+        );
+    }
+
     #[test]
     fn test_convert_from_to_ascii_a() {
         use rmk_types::keycode::{HidKeyCode, from_ascii, to_ascii};

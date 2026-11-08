@@ -336,6 +336,7 @@ pub enum HidKeyCode {
     Assistant = 0x00C0,
     MissionControl = 0x00C1,
     Launchpad = 0x00C2,
+    Globe = 0x00C3,
     /// Mouse Up
     MouseUp = 0x00CD,
     /// Mouse Down
@@ -475,6 +476,7 @@ impl HidKeyCode {
             HidKeyCode::Assistant => Some(ConsumerKey::Assistant),
             HidKeyCode::MissionControl => Some(ConsumerKey::DesktopShowAllWindows),
             HidKeyCode::Launchpad => Some(ConsumerKey::AcSoftKeyLeft),
+            HidKeyCode::Globe => Some(ConsumerKey::NextKeyboardLayoutSelect),
             _ => None,
         }
     }
@@ -493,5 +495,20 @@ impl HidKeyCode {
 impl From<u8> for HidKeyCode {
     fn from(value: u8) -> Self {
         Self::from_repr(value).unwrap_or(HidKeyCode::No)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Spec: ZMK app/include/dt-bindings/zmk/keys.h#L1443-L1445@git:4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85
+    // "The Globe key sends consumer usage 0x29D (AC Next Keyboard Layout Select)."
+    #[test]
+    fn globe_is_sent_as_next_keyboard_layout_select() {
+        assert_eq!(
+            HidKeyCode::Globe.process_as_consumer(),
+            Some(ConsumerKey::NextKeyboardLayoutSelect)
+        );
     }
 }

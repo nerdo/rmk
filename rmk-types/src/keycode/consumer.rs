@@ -204,6 +204,7 @@ impl ConsumerKey {
     pub fn to_hid_keycode(&self) -> Option<HidKeyCode> {
         match self {
             ConsumerKey::Mute => Some(HidKeyCode::AudioMute),
+            ConsumerKey::NextKeyboardLayoutSelect => Some(HidKeyCode::Globe),
             ConsumerKey::VolumeIncrement => Some(HidKeyCode::AudioVolUp),
             ConsumerKey::VolumeDecrement => Some(HidKeyCode::AudioVolDown),
             ConsumerKey::NextTrack => Some(HidKeyCode::MediaNextTrack),
