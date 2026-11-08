@@ -116,6 +116,9 @@ events = [
     # split/driver.rs: ConnectionStatusChangeEvent::subscriber()
     # Covers up to 2 peripherals; for 3+ peripherals override subs in keyboard.toml
     { name = "connection_status_change", count = 2 },
+    # split/driver.rs: SplitStateEvent::subscriber()
+    # Covers up to 2 peripherals; for 3+ peripherals override subs in keyboard.toml
+    { name = "split_state", count = 2 },
 ]
 
 # --- Split + BLE-gated internal subscribers ---

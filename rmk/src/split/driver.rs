@@ -198,6 +198,7 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
 
         let mut indicator_sub = crate::event::LedIndicatorEvent::subscriber();
         let mut layer_sub = crate::event::LayerChangeEvent::subscriber();
+        let mut split_state_sub = crate::event::SplitStateEvent::subscriber();
         // Subscribe before the initial send so any change racing past the
         // snapshot is still delivered to us.
         let mut connection_sub = crate::event::ConnectionStatusChangeEvent::subscriber();
@@ -208,6 +209,14 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
         #[cfg(feature = "display")]
         let mut modifier_sub = crate::event::ModifierEvent::subscriber();
         let mut sleep_sub = crate::event::SleepStateEvent::subscriber();
+
+        // A peripheral that connects or reconnects gets the firmware's split
+        // state at once, not at its next change.
+        if let Some(state) = super::current_split_state()
+            && self.send(&SplitMessage::State(state)).await.is_err()
+        {
+            return;
+        }
 
         // Send the current state once on startup so the peripheral matches us
         // even when no transition has happened since the central booted.
@@ -248,6 +257,7 @@ impl<T: SplitReader + SplitWriter> PeripheralManager<T> {
                         SplitMessage::ClearPeer
                     },
                     e = sleep_sub.next_event().fuse() => SplitMessage::SleepState(e.0),
+                    e = split_state_sub.next_event().fuse() => SplitMessage::State(e.0),
                     with_feature("display"): e = wpm_sub.next_event().fuse() => SplitMessage::Wpm(e.0),
                     with_feature("display"): e = modifier_sub.next_event().fuse() => SplitMessage::Modifier(e.modifier.into_bits()),
                 }

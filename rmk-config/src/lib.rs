@@ -515,6 +515,7 @@ define_event_config!(
     central_connected,
     peripheral_battery,
     clear_peer,
+    split_state,
     // DFU events
     dfu_status,
     // Action events

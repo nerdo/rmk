@@ -18,6 +18,9 @@ pub mod peripheral;
 pub mod rp;
 #[cfg(not(feature = "_ble"))]
 pub mod serial;
+pub(crate) mod state;
+
+pub use state::{SPLIT_STATE_LEN, SplitState, current_split_state, set_split_state};
 
 /// Maximum size of a split message
 pub const SPLIT_MESSAGE_MAX_SIZE: usize = SplitMessage::POSTCARD_MAX_SIZE + 4;
@@ -101,6 +104,10 @@ pub(crate) enum SplitMessage {
     /// Peripheral → Central: confirm mark_updated succeeded, about to reset.
     #[cfg(feature = "dfu_split")]
     FirmwareUpdateConfirm,
+
+    /// The firmware's split state, from central to peripheral, sent at session
+    /// start and on every change (see `state`).
+    State(SplitState),
 }
 
 // -----------------------------------------------------------------------

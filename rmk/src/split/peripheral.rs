@@ -165,6 +165,7 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                         SplitMessage::SleepState(sleeping) => {
                             publish_event(SleepStateEvent::new(sleeping));
                         }
+                        SplitMessage::State(state) => crate::split::state::update(state),
                         // --- dfu_split: firmware update handlers ---
                         #[cfg(feature = "dfu_split")]
                         SplitMessage::FirmwareHashQuery => {

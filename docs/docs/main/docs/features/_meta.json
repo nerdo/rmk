@@ -5,6 +5,7 @@
   "configuration",
   "low_power",
   "split_keyboard",
+  "split_state",
   "dongle",
   "vial_support",
   "rynk",
