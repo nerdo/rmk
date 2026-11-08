@@ -185,6 +185,10 @@ impl<P: PacketPool> HidWriterTrait for BleHidServer<'_, '_, '_, P> {
     async fn write_report(&mut self, report: &Self::ReportType) -> Result<usize, HidError> {
         match report {
             Report::KeyboardReport(r) => self.notify_report(self.input_keyboard, r).await,
+            // Bluetooth carries six keys: the report's generic serialization is
+            // its six-key form.
+            #[cfg(feature = "usb_nkro")]
+            Report::NkroKeyboardReport(_) => self.notify_report(self.input_keyboard, report).await,
             Report::MouseReport(r) => self.notify_report(self.mouse_report, r).await,
             Report::MediaKeyboardReport(r) => self.notify_report(self.media_report, r).await,
             Report::SystemControlReport(r) => self.notify_report(self.system_report, r).await,

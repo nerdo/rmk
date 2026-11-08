@@ -13,6 +13,10 @@ use usbd_hid::descriptor::generator_prelude::*;
 use usbd_hid::descriptor::{AsInputReport, MediaKeyboardReport, MouseReport, SystemControlReport};
 
 use crate::event::{LedIndicatorEvent, publish_event};
+
+/// USB n-key rollover reports.
+#[cfg(feature = "usb_nkro")]
+pub mod nkro;
 use crate::keyboard::LOCK_LED_STATES;
 
 /// KeyboardReport describes a report and its companion descriptor that can be
@@ -338,6 +342,9 @@ mod ble_report_map_tests {
 pub enum Report {
     /// Normal keyboard hid report
     KeyboardReport(KeyboardReport),
+    /// Every held key, with its six-key form for transports that carry six
+    #[cfg(feature = "usb_nkro")]
+    NkroKeyboardReport(nkro::NkroReport),
     /// Mouse hid report
     MouseReport(MouseReport),
     /// Media keyboard report
@@ -353,6 +360,8 @@ impl AsInputReport for Report {
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, usbd_hid::descriptor::BufferOverflow> {
         match self {
             Report::KeyboardReport(r) => r.serialize(buffer),
+            #[cfg(feature = "usb_nkro")]
+            Report::NkroKeyboardReport(r) => r.six_key.serialize(buffer),
             Report::MouseReport(r) => r.serialize(buffer),
             Report::MediaKeyboardReport(r) => r.serialize(buffer),
             Report::SystemControlReport(r) => r.serialize(buffer),

@@ -259,6 +259,11 @@ pub struct Keyboard<'a> {
     /// until a slot frees, so a seventh key is never lost.
     held_keys: Vec<PressedKey, HELD_KEYS_MAX>,
 
+    /// USB n-key rollover is on: reports carry every held key. On at start;
+    /// `NkroToggle` switches it.
+    #[cfg(feature = "usb_nkro")]
+    nkro: bool,
+
     /// Mouse state (report, acceleration, repeat counters, repeat deadlines)
     mouse: MouseState,
 
@@ -300,6 +305,8 @@ impl<'a> Keyboard<'a> {
             held_buffer: HeldBuffer::new(),
             held_modifiers: ModifierCombination::default(),
             held_keys: Vec::new(),
+            #[cfg(feature = "usb_nkro")]
+            nkro: true,
             mouse: MouseState::new(),
             media_report: MediaKeyboardReport { usage_id: 0 },
             system_control_report: SystemControlReport { usage_id: 0 },
@@ -1547,6 +1554,13 @@ impl<'a> Keyboard<'a> {
                     self.caps_word.toggle();
                 };
             }
+            KeyboardAction::NkroToggle =>
+            {
+                #[cfg(feature = "usb_nkro")]
+                if event.pressed {
+                    self.nkro = !self.nkro;
+                }
+            }
             KeyboardAction::ComboOn => self.combo_on = true,
             KeyboardAction::ComboOff => self.combo_on = false,
             KeyboardAction::ComboToggle => self.combo_on = !self.combo_on,
@@ -1926,10 +1940,28 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// The keyboard report to send: every held key while USB NKRO is on, the
+    /// six-key report otherwise.
+    #[cfg(feature = "usb_nkro")]
+    pub(crate) fn keyboard_report(&mut self, pressed: bool) -> Report {
+        let six_key = self.build_keyboard_report(pressed);
+        if !self.nkro {
+            return Report::KeyboardReport(six_key);
+        }
+        let held = self.held_keys.iter().map(|held| held.key as u8);
+        Report::NkroKeyboardReport(crate::hid::nkro::NkroReport {
+            bitmap: crate::hid::nkro::NkroKeyboardReport::from_usages(six_key.modifier, held),
+            six_key,
+        })
+    }
+
     /// Send the keyboard report with resolved modifiers to the host.
     pub(crate) async fn send_keyboard_report_with_resolved_modifiers(&mut self, pressed: bool) {
-        let report = self.build_keyboard_report(pressed);
-        self.send_report(Report::KeyboardReport(report)).await;
+        #[cfg(feature = "usb_nkro")]
+        let report = self.keyboard_report(pressed);
+        #[cfg(not(feature = "usb_nkro"))]
+        let report = Report::KeyboardReport(self.build_keyboard_report(pressed));
+        self.send_report(report).await;
 
         // Yield once after sending the report to channel
         yield_now().await;
@@ -2177,6 +2209,84 @@ mod test {
             fork: cfg,
             ..BehaviorConfig::default()
         })
+    }
+
+    // Spec: the user's choice (2026-11-08): USB NKRO starts on and the
+    // system layer's NkroToggle switches it, acting on press like the other
+    // toggles; with it on the report carries every held key (rmk/src/hid/nkro.rs).
+    #[cfg(feature = "usb_nkro")]
+    mod nkro {
+        use rmk_types::action::KeyboardAction;
+        use rmk_types::keycode::HidKeyCode;
+
+        use super::create_test_keyboard;
+        use crate::event::KeyboardEvent;
+        use crate::hid::Report;
+        use crate::hid::nkro::NkroKeyboardReport;
+        use crate::test_support::test_block_on as block_on;
+
+        fn bitmap(report: Report) -> Option<NkroKeyboardReport> {
+            match report {
+                Report::NkroKeyboardReport(r) => Some(r.bitmap),
+                _ => None,
+            }
+        }
+
+        // "NKRO is on at start: a held key reaches the bitmap."
+        #[test]
+        fn nkro_is_on_at_start() {
+            let mut keyboard = create_test_keyboard();
+            keyboard.register_key(HidKeyCode::A, KeyboardEvent::key(2, 1, true));
+            let expected = NkroKeyboardReport::from_usages(0, [HidKeyCode::A as u8]);
+            assert_eq!(bitmap(keyboard.keyboard_report(true)), Some(expected));
+        }
+
+        // "With NKRO on, every held key reaches the bitmap, seven included."
+        #[test]
+        fn every_held_key_reaches_the_bitmap() {
+            let mut keyboard = create_test_keyboard();
+            let keys = [
+                HidKeyCode::A,
+                HidKeyCode::B,
+                HidKeyCode::C,
+                HidKeyCode::D,
+                HidKeyCode::E,
+                HidKeyCode::F,
+                HidKeyCode::G,
+            ];
+            for (col, key) in keys.iter().enumerate() {
+                keyboard.register_key(*key, KeyboardEvent::key(2, col as u8, true));
+            }
+            let expected = NkroKeyboardReport::from_usages(0, keys.map(|k| k as u8));
+            assert_eq!(bitmap(keyboard.keyboard_report(true)), Some(expected));
+        }
+
+        // "Pressing the NKRO toggle switches to the six-key report."
+        #[test]
+        fn the_nkro_toggle_switches_to_the_six_key_report() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::NkroToggle, KeyboardEvent::key(0, 0, true))
+                    .await;
+                keyboard.register_key(HidKeyCode::A, KeyboardEvent::key(2, 1, true));
+                assert!(matches!(keyboard.keyboard_report(true), Report::KeyboardReport(_)));
+            });
+        }
+
+        // "Releasing the NKRO toggle changes nothing."
+        #[test]
+        fn releasing_the_nkro_toggle_changes_nothing() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::NkroToggle, KeyboardEvent::key(0, 0, false))
+                    .await;
+                keyboard.register_key(HidKeyCode::A, KeyboardEvent::key(2, 1, true));
+                let expected = NkroKeyboardReport::from_usages(0, [HidKeyCode::A as u8]);
+                assert_eq!(bitmap(keyboard.keyboard_report(true)), Some(expected));
+            });
+        }
     }
 
     #[test]

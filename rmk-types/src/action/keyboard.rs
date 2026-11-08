@@ -22,4 +22,6 @@ pub enum KeyboardAction {
     ComboOff,
     ComboToggle,
     CapsWordToggle,
+    /// Switch USB n-key rollover on or off (`usb_nkro` feature).
+    NkroToggle,
 }

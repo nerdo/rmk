@@ -182,6 +182,10 @@ defmt = [
     "heapless/defmt",
 ]
 
+## USB n-key rollover: the keyboard interface reports a 218-key bitmap,
+## falling back to six keys in boot protocol and over Bluetooth
+usb_nkro = []
+
 ## Enable logging via usb
 usb_log = ["dep:embassy-usb-logger", "log"]
 ## Use log, this feature cannot be enabled when defmt is enabled

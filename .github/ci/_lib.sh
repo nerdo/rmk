@@ -68,6 +68,7 @@ RMK_TEST_FEATURESETS=(
     "rynk,_ble,split,async_matrix,storage"
     "dongle,_ble,storage"
     "dongle,vial,_ble,storage"
+    "usb_nkro,vial,_ble,split,storage"
 )
 
 # Examples auto-discovery skiplist. Reasons:

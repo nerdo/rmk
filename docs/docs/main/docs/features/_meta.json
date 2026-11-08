@@ -2,6 +2,7 @@
   "matrix",
   "layers",
   "wireless",
+  "nkro",
   "configuration",
   "low_power",
   "split_keyboard",

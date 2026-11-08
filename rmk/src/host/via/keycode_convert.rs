@@ -77,6 +77,7 @@ pub(crate) fn to_via_keycode(key_action: KeyAction) -> u16 {
                 KeyboardAction::ComboOff => 0x7c51,
                 KeyboardAction::ComboToggle => 0x7c52,
                 KeyboardAction::CapsWordToggle => 0x7c73,
+                KeyboardAction::NkroToggle => 0x7013,
                 _ => {
                     warn!("KeyboardAction: {:?} vial is not supported yet", c);
                     0
@@ -214,6 +215,8 @@ pub(crate) fn from_via_keycode(via_keycode: u16) -> KeyAction {
             let index = (via_keycode & 0xFF) as u8;
             KeyAction::Morse(index)
         }
+        // QK_MAGIC_TOGGLE_NKRO, ahead of the rest of the magic range.
+        0x7013 => KeyAction::Single(Action::KeyboardControl(KeyboardAction::NkroToggle)),
         0x7000..=0x701F => {
             // TODO: QMK functions, such as swap ctrl/caps, gui on, haptic, music, clicky, combo, RGB, etc
             warn!("QMK functions {:#X} not supported", via_keycode);
@@ -870,6 +873,24 @@ mod test {
         assert_eq!(
             KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::Globe))),
             from_via_keycode(0xC3)
+        );
+    }
+
+    // Spec: QMK quantum/keycodes.h@git:d194c077ed964195ec16d255c7a4b89a794cf03b,
+    // "QK_MAGIC_TOGGLE_NKRO = 0x7013" (Vial's NK_TOGG).
+    // "Vial stores the NKRO toggle as 0x7013."
+    #[test]
+    fn nkro_toggle_converts_to_via_keycode_0x7013() {
+        let a = KeyAction::Single(Action::KeyboardControl(KeyboardAction::NkroToggle));
+        assert_eq!(0x7013, to_via_keycode(a));
+    }
+
+    // Same source. "Vial keycode 0x7013 loads back as the NKRO toggle."
+    #[test]
+    fn via_keycode_0x7013_converts_to_nkro_toggle() {
+        assert_eq!(
+            KeyAction::Single(Action::KeyboardControl(KeyboardAction::NkroToggle)),
+            from_via_keycode(0x7013)
         );
     }
 

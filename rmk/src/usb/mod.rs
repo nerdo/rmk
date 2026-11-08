@@ -17,9 +17,7 @@ use crate::config::DeviceConfig;
 use crate::core_traits::Runnable;
 #[cfg(feature = "steno")]
 use crate::hid::StenoReport;
-use crate::hid::{
-    CompositeReport, CompositeReportType, HidError, HidWriterTrait, KeyboardReport, Report, run_led_reader,
-};
+use crate::hid::{CompositeReport, CompositeReportType, HidError, HidWriterTrait, Report, run_led_reader};
 use crate::light::UsbLedReader;
 use crate::state::{current_usb_state, set_usb_state};
 
@@ -60,7 +58,7 @@ impl HostSession for () {
 /// optional logger; `run` borrows those fields separately so they can run
 /// concurrently without moving the whole transport into one task.
 pub(crate) struct UsbKeyboardWriter<'a, 'd, D: Driver<'d>> {
-    pub(crate) keyboard_writer: &'a mut HidWriter<'d, D, 8>,
+    pub(crate) keyboard_writer: &'a mut HidWriter<'d, D, KEYBOARD_PACKET>,
     pub(crate) other_writer: &'a mut HidWriter<'d, D, 9>,
     #[cfg(feature = "steno")]
     pub(crate) steno_writer: &'a mut HidWriter<'d, D, 9>,
@@ -119,6 +117,19 @@ impl<'d, D: Driver<'d>> HidWriterTrait for UsbKeyboardWriter<'_, 'd, D> {
 
     async fn write_report(&mut self, report: &Self::ReportType) -> Result<usize, HidError> {
         match report {
+            #[cfg(feature = "usb_nkro")]
+            Report::KeyboardReport(_) | Report::NkroKeyboardReport(_) => {
+                let mut buf = [0u8; crate::hid::nkro::NKRO_REPORT_BYTES];
+                let protocol = crate::hid::nkro::keyboard_protocol();
+                let n = crate::hid::nkro::keyboard_payload(report, protocol, &mut buf)
+                    .ok_or(HidError::ReportSerializeError)?;
+                self.keyboard_writer
+                    .write(&buf[..n])
+                    .await
+                    .map_err(HidError::UsbEndpointError)?;
+                Ok(n)
+            }
+            #[cfg(not(feature = "usb_nkro"))]
             Report::KeyboardReport(keyboard_report) => {
                 let mut buf: [u8; 8] = [0; 8];
                 let n: usize = keyboard_report
@@ -249,7 +260,7 @@ pub(crate) fn new_usb_builder<'d, D: Driver<'d>>(
 pub struct UsbTransport<'a, D: Driver<'static>, S = ()> {
     device: UsbDevice<'static, D>,
     keyboard_reader: HidReader<'static, D, 1>,
-    keyboard_writer: HidWriter<'static, D, 8>,
+    keyboard_writer: HidWriter<'static, D, KEYBOARD_PACKET>,
     other_writer: HidWriter<'static, D, 9>,
     #[cfg(feature = "steno")]
     steno_writer: HidWriter<'static, D, 9>,
@@ -288,7 +299,7 @@ impl<'a, D: Driver<'static>> UsbTransport<'a, D> {
 /// A [`UsbTransport`] mid-construction. See [`UsbTransport::builder`].
 pub struct UsbTransportBuilder<D: Driver<'static>> {
     builder: Builder<'static, D>,
-    keyboard_rw: HidReaderWriter<'static, D, 1, 8>,
+    keyboard_rw: HidReaderWriter<'static, D, 1, KEYBOARD_PACKET>,
     other_writer: HidWriter<'static, D, 9>,
     #[cfg(feature = "steno")]
     steno_writer: HidWriter<'static, D, 9>,
@@ -318,10 +329,10 @@ impl<D: Driver<'static>> UsbTransportBuilder<D> {
         // HID interface.
         let keyboard_rw = add_usb_reader_writer!(
             &mut builder,
-            KeyboardReport,
+            KeyboardDescriptor,
             1,
-            8,
-            8,
+            KEYBOARD_PACKET,
+            KEYBOARD_PACKET as u16,
             ::embassy_usb::class::hid::HidSubclass::Boot,
             ::embassy_usb::class::hid::HidBootProtocol::Keyboard
         );
@@ -604,11 +615,35 @@ pub(crate) use add_usb_reader_writer;
 pub(crate) use add_usb_writer;
 pub(crate) use usb_hid_state_and_config;
 
+/// The keyboard interface's report descriptor and packet size: the NKRO
+/// bitmap with `usb_nkro`, the six-key boot report without.
+#[cfg(feature = "usb_nkro")]
+type KeyboardDescriptor = crate::hid::nkro::NkroKeyboardReport;
+#[cfg(not(feature = "usb_nkro"))]
+type KeyboardDescriptor = crate::hid::KeyboardReport;
+#[cfg(feature = "usb_nkro")]
+const KEYBOARD_PACKET: usize = 32;
+#[cfg(not(feature = "usb_nkro"))]
+const KEYBOARD_PACKET: usize = 8;
+
 pub(crate) struct UsbRequestHandler {}
 
 impl RequestHandler for UsbRequestHandler {
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
         info!("Set report for {:?}: {:?}", id, data);
+        OutResponse::Accepted
+    }
+
+    // With NKRO the boot and report layouts differ, so the keyboard interface
+    // accepts the boot protocol a BIOS asks for (HID 1.11 7.2.6).
+    #[cfg(feature = "usb_nkro")]
+    fn get_protocol(&self) -> embassy_usb::class::hid::HidProtocolMode {
+        crate::hid::nkro::keyboard_protocol()
+    }
+
+    #[cfg(feature = "usb_nkro")]
+    fn set_protocol(&mut self, protocol: embassy_usb::class::hid::HidProtocolMode) -> OutResponse {
+        crate::hid::nkro::set_keyboard_protocol(protocol);
         OutResponse::Accepted
     }
 }
@@ -642,6 +677,9 @@ impl Handler for UsbDeviceHandler {
 
     fn reset(&mut self) {
         info!("Bus reset, the Vbus current limit is 100mA");
+        // HID 1.11 7.2.6: a reset puts the keyboard back in report protocol.
+        #[cfg(feature = "usb_nkro")]
+        crate::hid::nkro::set_keyboard_protocol(embassy_usb::class::hid::HidProtocolMode::Report);
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -770,5 +808,32 @@ mod tests {
 
         handler.suspended(false);
         assert_eq!(current_usb_state(), UsbState::Configured);
+    }
+}
+
+#[cfg(all(test, feature = "usb_nkro"))]
+mod nkro_tests {
+    use embassy_usb::Handler;
+    use embassy_usb::class::hid::{HidProtocolMode, RequestHandler};
+
+    use super::{UsbDeviceHandler, UsbRequestHandler};
+    use crate::hid::nkro::{keyboard_protocol, set_keyboard_protocol};
+
+    // Spec: USB HID 1.11 7.2.6 Set_Protocol and 7.2.5 Get_Protocol.
+    // "A host's switch to boot protocol is accepted, and reads back."
+    #[test]
+    fn the_host_can_select_boot_protocol() {
+        let mut handler = UsbRequestHandler {};
+        handler.set_protocol(HidProtocolMode::Boot);
+        assert_eq!(handler.get_protocol(), HidProtocolMode::Boot);
+    }
+
+    // Spec: USB HID 1.11 7.2.6: after a reset the device is in report protocol.
+    // "A USB reset returns the keyboard to report protocol."
+    #[test]
+    fn a_usb_reset_returns_to_report_protocol() {
+        set_keyboard_protocol(HidProtocolMode::Boot);
+        UsbDeviceHandler::new().reset();
+        assert_eq!(keyboard_protocol(), HidProtocolMode::Report);
     }
 }

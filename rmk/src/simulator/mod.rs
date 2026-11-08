@@ -572,8 +572,14 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
 
 /// Whether two reports say the same thing. Keycode order within a keyboard
 /// report is not part of the contract; every other page compares by its wire
-/// bytes, so only differences the HID descriptor can express count.
+/// bytes, so only differences the HID descriptor can express count. With
+/// `usb_nkro` a keyboard report compares by its six-key form, which scenarios
+/// describe; the NKRO bitmap has unit tests of its own (`hid::nkro`).
 fn same_report(expected: &Report, actual: &Report) -> bool {
+    #[cfg(feature = "usb_nkro")]
+    if let Report::NkroKeyboardReport(actual) = actual {
+        return same_report(expected, &Report::KeyboardReport(actual.six_key));
+    }
     match (expected, actual) {
         (Report::KeyboardReport(expected), Report::KeyboardReport(actual)) => {
             let down = |report: &KeyboardReport| {
@@ -620,6 +626,8 @@ fn keys(modifier: u8, keycodes: &[u8]) -> String {
 fn summary(report: &Report) -> String {
     match report {
         Report::KeyboardReport(report) => keys(report.modifier, &report.keycodes),
+        #[cfg(feature = "usb_nkro")]
+        Report::NkroKeyboardReport(report) => keys(report.six_key.modifier, &report.six_key.keycodes),
         Report::MouseReport(report) => format!("{report:?}"),
         Report::MediaKeyboardReport(report) => format!("{report:?}"),
         Report::SystemControlReport(report) => format!("{report:?}"),
