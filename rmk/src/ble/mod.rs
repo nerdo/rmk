@@ -51,6 +51,8 @@ pub(crate) mod led;
 pub(crate) mod nrf;
 pub mod passkey;
 pub(crate) mod profile;
+#[cfg(feature = "dongle")]
+pub use profile::DONGLE_PROFILE;
 #[cfg(any(feature = "split", feature = "dongle"))]
 pub(crate) mod scan;
 pub(crate) mod sleep;

@@ -42,6 +42,7 @@ pub(crate) mod held_buffer;
 pub(crate) mod morse;
 pub(crate) mod mouse;
 pub(crate) mod oneshot;
+pub mod status;
 #[cfg(feature = "steno")]
 pub(crate) mod steno;
 
@@ -113,6 +114,15 @@ impl CapsWordState {
         }
     }
 
+    /// When Caps Word times out unless another key comes, or `None` while
+    /// it is off.
+    fn until(&self) -> Option<Instant> {
+        match self {
+            CapsWordState::Activated { timer, .. } => Some(*timer + Self::TIMEOUT),
+            CapsWordState::Deactivated => None,
+        }
+    }
+
     /// Return whether the current key pressed is to be shifted
     fn is_shift_current(&self) -> bool {
         if let CapsWordState::Activated { shift_current, .. } = self {
@@ -145,6 +155,7 @@ impl Runnable for Keyboard<'_> {
         #[cfg(all(feature = "usb_nkro", feature = "storage"))]
         if let Some(on) = crate::storage::read_usb_nkro().await {
             self.nkro = on;
+            status::set_nkro(on);
         }
         loop {
             // TODO: Now the unprocessed_events is only used in held_for_5s.
@@ -292,6 +303,10 @@ pub struct Keyboard<'a> {
 
 impl<'a> Keyboard<'a> {
     pub fn new(keymap: &'a KeyMap<'a>) -> Self {
+        // NKRO starts on (the `nkro` field below); storage may switch it off
+        // when the keyboard runs.
+        #[cfg(feature = "usb_nkro")]
+        status::set_nkro(true);
         Keyboard {
             keymap,
             keyboard_event_subscriber: KeyboardEvent::subscriber(),
@@ -1557,6 +1572,7 @@ impl<'a> Keyboard<'a> {
                 // Handle Caps Word
                 if event.pressed {
                     self.caps_word.toggle();
+                    status::set_caps_word_until(self.caps_word.until());
                 };
             }
             KeyboardAction::NkroToggle =>
@@ -1564,6 +1580,7 @@ impl<'a> Keyboard<'a> {
                 #[cfg(feature = "usb_nkro")]
                 if event.pressed {
                     self.nkro = !self.nkro;
+                    status::set_nkro(self.nkro);
                     #[cfg(feature = "storage")]
                     crate::channel::FLASH_CHANNEL
                         .send(crate::storage::FlashOperationMessage::UsbNkro(self.nkro))
@@ -1629,6 +1646,7 @@ impl<'a> Keyboard<'a> {
 
             // Check Caps Word
             self.caps_word.check(key);
+            status::set_caps_word_until(self.caps_word.until());
         }
 
         // Dispatch to the right HID report; only the plain-keyboard branch is "basic".
@@ -2218,6 +2236,81 @@ mod test {
             fork: cfg,
             ..BehaviorConfig::default()
         })
+    }
+
+    // Spec: the user (2026-11-08): the screen shows NKRO while it is on, and
+    // CAPS while Caps Lock or Caps Word is ("caps = caps_lock | caps_word").
+    // The keyboard publishes its toggles for the screen to read.
+    mod status {
+        use embassy_time::Timer;
+        use rmk_types::action::KeyboardAction;
+        use rmk_types::keycode::HidKeyCode;
+
+        use super::create_test_keyboard;
+        use crate::event::KeyboardEvent;
+        use crate::keyboard::status::keyboard_status;
+        use crate::test_support::test_block_on as block_on;
+
+        // "Caps Word shows on once its key is pressed."
+        #[test]
+        fn caps_word_shows_on_after_its_key() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::CapsWordToggle, KeyboardEvent::key(0, 0, true))
+                    .await;
+                assert!(keyboard_status().caps_word);
+            });
+        }
+
+        // "Caps Word shows off once a key that ends it is pressed, such as Space."
+        #[test]
+        fn caps_word_shows_off_after_a_key_that_ends_it() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::CapsWordToggle, KeyboardEvent::key(0, 0, true))
+                    .await;
+                keyboard
+                    .process_action_key(HidKeyCode::Space, KeyboardEvent::key(0, 1, true))
+                    .await;
+                assert!(!keyboard_status().caps_word);
+            });
+        }
+
+        // "Caps Word shows off once it times out, 5 s after the last key."
+        #[test]
+        fn caps_word_shows_off_after_its_timeout() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::CapsWordToggle, KeyboardEvent::key(0, 0, true))
+                    .await;
+                Timer::after_secs(6).await;
+                assert!(!keyboard_status().caps_word);
+            });
+        }
+
+        // "NKRO shows on at start."
+        #[cfg(feature = "usb_nkro")]
+        #[test]
+        fn nkro_shows_on_at_start() {
+            let _keyboard = create_test_keyboard();
+            assert!(keyboard_status().nkro);
+        }
+
+        // "NKRO shows off once its toggle switches it off."
+        #[cfg(feature = "usb_nkro")]
+        #[test]
+        fn nkro_shows_off_after_its_toggle() {
+            block_on(async {
+                let mut keyboard = create_test_keyboard();
+                keyboard
+                    .process_action_keyboard_control(KeyboardAction::NkroToggle, KeyboardEvent::key(0, 0, true))
+                    .await;
+                assert!(!keyboard_status().nkro);
+            });
+        }
     }
 
     // Spec: the user's choice (2026-11-08): USB NKRO starts on and the

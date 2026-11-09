@@ -15,11 +15,15 @@ use crate::event::{ConnectionStatusChangeEvent, publish_event};
 pub(crate) static CONNECTION_STATUS: Mutex<RawMutex, Cell<ConnectionStatus>> =
     Mutex::new(Cell::new(ConnectionStatus::new()));
 
-pub(crate) fn active_transport() -> Option<ConnectionType> {
+/// The transport reports go out on now: USB, Bluetooth, or `None` with
+/// neither ready.
+pub fn active_transport() -> Option<ConnectionType> {
     CONNECTION_STATUS.lock(|c| c.get().decide_active())
 }
 
-pub(crate) fn current_connection_status() -> ConnectionStatus {
+/// USB's state, Bluetooth's profile and state, and which transport is
+/// preferred when both are ready.
+pub fn current_connection_status() -> ConnectionStatus {
     CONNECTION_STATUS.lock(|c| c.get())
 }
 

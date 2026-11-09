@@ -21,7 +21,7 @@ pub(crate) static UPDATED_CCCD_TABLE: Signal<crate::RawMutex, heapless::Vec<u8, 
 /// so pairing a dongle never touches a host bond. Selected only via the
 /// `SwitchToDongle` key, never by profile cycling.
 #[cfg(feature = "dongle")]
-pub(crate) const DONGLE_PROFILE: u8 = NUM_BLE_PROFILE as u8;
+pub const DONGLE_PROFILE: u8 = NUM_BLE_PROFILE as u8;
 
 /// Bond slots kept by the profile manager: the host profiles, plus the
 /// dedicated dongle slot on `dongle` builds.
