@@ -42,8 +42,10 @@ static PEER_ADDRESS_RESPONSE: Signal<crate::RawMutex, Option<PeerAddress>> = Sig
 static CONNECTION_TYPE_RESPONSE: Signal<crate::RawMutex, Option<ConnectionType>> = Signal::new();
 #[cfg(feature = "_ble")]
 static ACTIVE_BLE_PROFILE_RESPONSE: Signal<crate::RawMutex, Option<u8>> = Signal::new();
+#[cfg(feature = "usb_nkro")]
+static USB_NKRO_RESPONSE: Signal<crate::RawMutex, Option<bool>> = Signal::new();
 
-#[cfg(feature = "_ble")]
+#[cfg(any(feature = "_ble", feature = "usb_nkro"))]
 async fn request_read<T: Send>(msg: FlashOperationMessage, response: &Signal<crate::RawMutex, T>) -> T {
     response.reset();
     FLASH_CHANNEL.send(msg).await;
@@ -72,6 +74,32 @@ pub(crate) async fn read_active_ble_profile() -> Option<u8> {
         &ACTIVE_BLE_PROFILE_RESPONSE,
     )
     .await
+}
+
+/// Answer `message` as a keyboard with no flash would: every read finds
+/// nothing stored. For a stand-in that drains `FLASH_CHANNEL` in place of the
+/// storage task, so a read never waits on a reply that will not come.
+#[cfg(feature = "std")]
+pub(crate) fn answer_without_flash(message: &FlashOperationMessage) {
+    match message {
+        #[cfg(feature = "_ble")]
+        FlashOperationMessage::ReadBleBondInfo(_) => BOND_INFO_RESPONSE.signal(None),
+        #[cfg(all(feature = "_ble", feature = "split"))]
+        FlashOperationMessage::ReadPeerAddress(_) => PEER_ADDRESS_RESPONSE.signal(None),
+        #[cfg(feature = "_ble")]
+        FlashOperationMessage::ReadConnectionType => CONNECTION_TYPE_RESPONSE.signal(None),
+        #[cfg(feature = "_ble")]
+        FlashOperationMessage::ReadActiveBleProfile => ACTIVE_BLE_PROFILE_RESPONSE.signal(None),
+        #[cfg(feature = "usb_nkro")]
+        FlashOperationMessage::ReadUsbNkro => USB_NKRO_RESPONSE.signal(None),
+        _ => {}
+    }
+}
+
+/// The stored USB NKRO switch, or `None` when it was never switched.
+#[cfg(feature = "usb_nkro")]
+pub(crate) async fn read_usb_nkro() -> Option<bool> {
+    request_read(FlashOperationMessage::ReadUsbNkro, &USB_NKRO_RESPONSE).await
 }
 
 /// Send a peer address to be persisted; wait for the storage task to finish.
@@ -168,6 +196,12 @@ pub(crate) enum FlashOperationMessage {
     #[cfg(feature = "_ble")]
     // Read the persisted active BLE profile number; storage task replies via `ACTIVE_BLE_PROFILE_RESPONSE`.
     ReadActiveBleProfile,
+    #[cfg(feature = "usb_nkro")]
+    // The USB NKRO switch, on or off
+    UsbNkro(bool),
+    #[cfg(feature = "usb_nkro")]
+    // Read the persisted USB NKRO switch; storage task replies via `USB_NKRO_RESPONSE`.
+    ReadUsbNkro,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -202,6 +236,8 @@ pub(crate) enum StorageKey {
     ActiveBleProfile,
     #[cfg(feature = "_ble")]
     BondInfo(u8),
+    #[cfg(feature = "usb_nkro")]
+    UsbNkro,
 }
 
 impl StorageKey {
@@ -283,6 +319,8 @@ pub(crate) enum StorageData {
     BondInfo(ProfileInfo),
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
+    #[cfg(feature = "usb_nkro")]
+    UsbNkro(bool),
 }
 
 impl<'a> PostcardValue<'a> for StorageData {}
@@ -700,6 +738,19 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                     continue;
                 }
 
+                #[cfg(feature = "usb_nkro")]
+                FlashOperationMessage::ReadUsbNkro => {
+                    let resp = match self.fetch_data(StorageKey::UsbNkro).await {
+                        Some(StorageData::UsbNkro(on)) => Some(on),
+                        _ => None,
+                    };
+                    USB_NKRO_RESPONSE.signal(resp);
+                    continue;
+                }
+                #[cfg(feature = "usb_nkro")]
+                FlashOperationMessage::UsbNkro(on) => {
+                    self.store_data(StorageKey::UsbNkro, &StorageData::UsbNkro(on)).await
+                }
                 FlashOperationMessage::LayoutOptions(layout_option) => {
                     update_storage_field!(&mut self.flash, &mut self.buffer, LayoutConfig, layout_option)
                 }
@@ -998,6 +1049,8 @@ mod tests {
             StorageKey::ActiveBleProfile,
             #[cfg(feature = "_ble")]
             StorageKey::BondInfo(0),
+            #[cfg(feature = "usb_nkro")]
+            StorageKey::UsbNkro,
         ];
 
         let mut buffer = [0u8; 64];

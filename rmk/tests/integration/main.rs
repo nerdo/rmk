@@ -10,6 +10,8 @@
 // subset of it — so per-row dead code is expected, not a finding.
 #![allow(dead_code)]
 
+#[cfg(all(feature = "usb_nkro", feature = "storage"))]
+mod nkro;
 #[cfg(feature = "rynk")]
 mod rynk;
 #[cfg(feature = "vial")]

@@ -93,13 +93,14 @@ pub(crate) static FLASH_CHANNEL: Channel<RawMutex, FlashOperationMessage, FLASH_
 
 /// Test-only: continuously drain [`FLASH_CHANNEL`] so host-service integration
 /// tests that trigger persistence never block on a full, never-serviced flash
-/// queue — the real firmware's storage task is what normally drains it.
+/// queue — the real firmware's storage task is what normally drains it. A
+/// read finds nothing stored.
 #[cfg(feature = "std")]
 #[doc(hidden)]
 pub async fn drain_flash_channel_for_test() {
     #[cfg(feature = "storage")]
     loop {
-        FLASH_CHANNEL.receive().await;
+        crate::storage::answer_without_flash(&FLASH_CHANNEL.receive().await);
     }
     #[cfg(not(feature = "storage"))]
     core::future::pending::<()>().await

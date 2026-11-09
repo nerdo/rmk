@@ -168,6 +168,7 @@ enum SimStep {
     Event(KeyboardEvent),
     Delay(Duration),
     ExpectReport(Report),
+    ExpectExactReport(Report),
     ExpectNoReport(Duration),
     HostSend(Vec<u8>),
     ExpectHostFrame(Vec<u8>),
@@ -272,6 +273,13 @@ impl SimKeyboard {
 
     pub fn expect_report(&mut self, report: Report) -> &mut Self {
         self.steps.push(SimStep::ExpectReport(report));
+        self
+    }
+
+    /// Like [`Self::expect_report`], and the report must also be of the same
+    /// kind: a six-key report never matches an NKRO one, nor the reverse.
+    pub fn expect_exact_report(&mut self, report: Report) -> &mut Self {
+        self.steps.push(SimStep::ExpectExactReport(report));
         self
     }
 
@@ -435,7 +443,12 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
                 with_timeout(sender.publish_async(event), &waiting).await;
             }
             SimStep::Delay(duration) => Timer::after(duration).await,
-            SimStep::ExpectReport(expected) => {
+            step @ (SimStep::ExpectReport(_) | SimStep::ExpectExactReport(_)) => {
+                let (expected, matches): (Report, fn(&Report, &Report) -> bool) = match step {
+                    SimStep::ExpectReport(report) => (report, same_report),
+                    SimStep::ExpectExactReport(report) => (report, exact_report),
+                    _ => unreachable!(),
+                };
                 let at = format!("expect[{expects}]");
                 expects += 1;
                 let waiting = format!(
@@ -443,10 +456,12 @@ async fn run_steps(steps: Vec<SimStep>, to_device: &Link, from_device: &Link) {
                     summary(&expected)
                 );
                 let actual = with_timeout(REPORT_CHANNEL.receive(), &waiting).await;
-                if !same_report(&expected, &actual) {
+                if !matches(&expected, &actual) {
                     panic!(
-                        "{at}: HID report mismatch\n  expected {}\n    actual {}",
+                        "{at}: HID report mismatch\n  expected {} {}\n    actual {} {}",
+                        kind(&expected),
                         summary(&expected),
+                        kind(&actual),
                         summary(&actual)
                     );
                 }
@@ -590,6 +605,36 @@ fn same_report(expected: &Report, actual: &Report) -> bool {
             down(expected) == down(actual)
         }
         _ => core::mem::discriminant(expected) == core::mem::discriminant(actual) && bytes(expected) == bytes(actual),
+    }
+}
+
+/// The report's kind, for a mismatch message: two reports that list the
+/// same keys can still differ in kind.
+fn kind(report: &Report) -> &'static str {
+    match report {
+        Report::KeyboardReport(_) => "six-key",
+        #[cfg(feature = "usb_nkro")]
+        Report::NkroKeyboardReport(_) => "nkro",
+        _ => "",
+    }
+}
+
+/// [`same_report`], with the kind of report part of the comparison; two NKRO
+/// reports also compare by their bitmaps.
+fn exact_report(expected: &Report, actual: &Report) -> bool {
+    if core::mem::discriminant(expected) != core::mem::discriminant(actual) {
+        return false;
+    }
+    match (expected, actual) {
+        #[cfg(feature = "usb_nkro")]
+        (Report::NkroKeyboardReport(expected), Report::NkroKeyboardReport(actual)) => {
+            expected.bitmap == actual.bitmap
+                && same_report(
+                    &Report::KeyboardReport(expected.six_key),
+                    &Report::KeyboardReport(actual.six_key),
+                )
+        }
+        _ => same_report(expected, actual),
     }
 }
 

@@ -23,7 +23,8 @@ sent as soon as one of the six is released.
 ## Switching it
 
 NKRO is on at start. Bind `NkroToggle` to switch it on and off while the
-keyboard runs; Vial shows the key as `NK_TOGG`.
+keyboard runs; Vial shows the key as `NK_TOGG`. With the `storage` feature the
+keyboard saves each switch and starts the next time the way it was left.
 
 ```toml title="keyboard.toml"
 [[keymap.layer]]

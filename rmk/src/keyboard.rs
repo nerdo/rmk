@@ -141,6 +141,11 @@ impl Runnable for Keyboard<'_> {
     /// Main keyboard processing task, it receives input devices result, processes keys.
     /// The report is sent using `send_report`.
     async fn run(&mut self) -> ! {
+        // The USB NKRO switch as it was last left, before any key is processed.
+        #[cfg(all(feature = "usb_nkro", feature = "storage"))]
+        if let Some(on) = crate::storage::read_usb_nkro().await {
+            self.nkro = on;
+        }
         loop {
             // TODO: Now the unprocessed_events is only used in held_for_5s.
             // Maybe it can be removed in the future?
@@ -1559,6 +1564,10 @@ impl<'a> Keyboard<'a> {
                 #[cfg(feature = "usb_nkro")]
                 if event.pressed {
                     self.nkro = !self.nkro;
+                    #[cfg(feature = "storage")]
+                    crate::channel::FLASH_CHANNEL
+                        .send(crate::storage::FlashOperationMessage::UsbNkro(self.nkro))
+                        .await;
                 }
             }
             KeyboardAction::ComboOn => self.combo_on = true,
