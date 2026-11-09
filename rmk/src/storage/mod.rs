@@ -28,6 +28,9 @@ use crate::config::StorageConfig;
 use crate::split::ble::PeerAddress;
 use crate::{BUILD_HASH, config};
 
+mod firmware_data;
+pub use firmware_data::{FIRMWARE_DATA_LEN, FirmwareData, read_firmware_data, save_firmware_data};
+
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
 pub(crate) static FLASH_OPERATION_FINISHED: Signal<crate::RawMutex, bool> = Signal::new();
@@ -42,10 +45,10 @@ static PEER_ADDRESS_RESPONSE: Signal<crate::RawMutex, Option<PeerAddress>> = Sig
 static CONNECTION_TYPE_RESPONSE: Signal<crate::RawMutex, Option<ConnectionType>> = Signal::new();
 #[cfg(feature = "_ble")]
 static ACTIVE_BLE_PROFILE_RESPONSE: Signal<crate::RawMutex, Option<u8>> = Signal::new();
+static FIRMWARE_DATA_RESPONSE: Signal<crate::RawMutex, Option<FirmwareData>> = Signal::new();
 #[cfg(feature = "usb_nkro")]
 static USB_NKRO_RESPONSE: Signal<crate::RawMutex, Option<bool>> = Signal::new();
 
-#[cfg(any(feature = "_ble", feature = "usb_nkro"))]
 async fn request_read<T: Send>(msg: FlashOperationMessage, response: &Signal<crate::RawMutex, T>) -> T {
     response.reset();
     FLASH_CHANNEL.send(msg).await;
@@ -90,10 +93,21 @@ pub(crate) fn answer_without_flash(message: &FlashOperationMessage) {
         FlashOperationMessage::ReadConnectionType => CONNECTION_TYPE_RESPONSE.signal(None),
         #[cfg(feature = "_ble")]
         FlashOperationMessage::ReadActiveBleProfile => ACTIVE_BLE_PROFILE_RESPONSE.signal(None),
+        FlashOperationMessage::ReadFirmwareData => FIRMWARE_DATA_RESPONSE.signal(None),
         #[cfg(feature = "usb_nkro")]
         FlashOperationMessage::ReadUsbNkro => USB_NKRO_RESPONSE.signal(None),
         _ => {}
     }
+}
+
+/// The firmware's saved data; see [`read_firmware_data`].
+async fn read_saved_firmware_data() -> Option<FirmwareData> {
+    request_read(FlashOperationMessage::ReadFirmwareData, &FIRMWARE_DATA_RESPONSE).await
+}
+
+/// Queue `data` for the storage task to save; see [`save_firmware_data`].
+async fn queue_firmware_data(data: FirmwareData) {
+    FLASH_CHANNEL.send(FlashOperationMessage::FirmwareData(data)).await;
 }
 
 /// The stored USB NKRO switch, or `None` when it was never switched.
@@ -196,6 +210,10 @@ pub(crate) enum FlashOperationMessage {
     #[cfg(feature = "_ble")]
     // Read the persisted active BLE profile number; storage task replies via `ACTIVE_BLE_PROFILE_RESPONSE`.
     ReadActiveBleProfile,
+    // The firmware's own data (`firmware_data`)
+    FirmwareData(FirmwareData),
+    // Read the firmware's data; storage task replies via `FIRMWARE_DATA_RESPONSE`.
+    ReadFirmwareData,
     #[cfg(feature = "usb_nkro")]
     // The USB NKRO switch, on or off
     UsbNkro(bool),
@@ -236,6 +254,7 @@ pub(crate) enum StorageKey {
     ActiveBleProfile,
     #[cfg(feature = "_ble")]
     BondInfo(u8),
+    FirmwareData,
     #[cfg(feature = "usb_nkro")]
     UsbNkro,
 }
@@ -319,6 +338,7 @@ pub(crate) enum StorageData {
     BondInfo(ProfileInfo),
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
+    FirmwareData(FirmwareData),
     #[cfg(feature = "usb_nkro")]
     UsbNkro(bool),
 }
@@ -738,6 +758,18 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                     continue;
                 }
 
+                FlashOperationMessage::ReadFirmwareData => {
+                    let resp = match self.fetch_data(StorageKey::FirmwareData).await {
+                        Some(StorageData::FirmwareData(data)) => Some(data),
+                        _ => None,
+                    };
+                    FIRMWARE_DATA_RESPONSE.signal(resp);
+                    continue;
+                }
+                FlashOperationMessage::FirmwareData(data) => {
+                    self.store_data(StorageKey::FirmwareData, &StorageData::FirmwareData(data))
+                        .await
+                }
                 #[cfg(feature = "usb_nkro")]
                 FlashOperationMessage::ReadUsbNkro => {
                     let resp = match self.fetch_data(StorageKey::UsbNkro).await {
@@ -1049,6 +1081,7 @@ mod tests {
             StorageKey::ActiveBleProfile,
             #[cfg(feature = "_ble")]
             StorageKey::BondInfo(0),
+            StorageKey::FirmwareData,
             #[cfg(feature = "usb_nkro")]
             StorageKey::UsbNkro,
         ];
