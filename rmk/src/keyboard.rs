@@ -580,7 +580,10 @@ impl<'a> Keyboard<'a> {
                 }
                 HeldKeyDecision::PermissiveHold | HeldKeyDecision::HoldOnOtherKeyPress => {
                     if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
-                        let action = self.keymap.get_action_with_layer_cache(held_key.event);
+                        // The action the key was pressed with: a layer turned on since
+                        // (say by another held key decided on this same press) must not
+                        // change what this key does.
+                        let action = held_key.action;
 
                         if action.is_morse() {
                             // Permissive hold of held key is triggered
@@ -800,7 +803,14 @@ impl<'a> Keyboard<'a> {
                                     held_key.action
                                 );
                                 let _ = decisions.push((held_key.event.pos, HeldKeyDecision::HoldOnOtherKeyPress));
-                                decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
+                                // A morse key pressed earlier and still waiting on a
+                                // release (permissive hold) keeps the current key
+                                // buffered: firing it now would send it ahead of that
+                                // key's decision, and its release would no longer
+                                // count toward that key's permissive hold.
+                                if decision_for_current_key != KeyBehaviorDecision::Buffer {
+                                    decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
+                                }
                             }
                             MorseMode::Normal => {
                                 // Normal mode: resolve a same-hand HRM as tap on press when

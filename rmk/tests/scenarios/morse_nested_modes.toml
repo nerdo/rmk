@@ -1,0 +1,45 @@
+# Two morse keys pending at once under different modes: a permissive-hold
+# home-row mod held first, then a hold-on-other-press layer thumb. A key
+# pressed while the home-row mod is still undecided must wait for it, even
+# once the thumb has decided on that press; otherwise it reaches the host
+# ahead of the modifier, and its release no longer counts toward the
+# home-row mod's permissive hold.
+#
+# Found on aurora-corne (2026-11-09): right Cmd (; held) + the left layer
+# thumb + Tab sent Tab, then ";", unless Cmd was held past its tapping term.
+#
+# Keys: MT(A, LGui)@(1,1), MT(;, RGui)@(1,8), LT(1, Space, thumb)@(3,4),
+#       layer 1 Tab@(1,3).
+
+keyboard = "boards/nested_modes.toml"
+
+# The case without the thumb: one pending key resolves as it should.
+[[test]]
+name = "holding_semicolon_and_tapping_d_sends_right_gui_d"
+steps = [
+  { delay = 300 },
+  { press = [1, 8] },
+  { delay = 30 },
+  { tap = { pos = [1, 3], duration = 30 } },
+  { delay = 30 },
+  { release = [1, 8] },
+]
+expect = [["RGui"], ["RGui", "D"], ["RGui"], []]
+
+# "Holding ;, holding the layer thumb, then tapping Tab, all quickly, sends
+# Cmd+Tab."
+[[test]]
+name = "holding_semicolon_then_the_layer_thumb_then_tapping_tab_sends_right_gui_tab"
+steps = [
+  { delay = 300 },
+  { press = [1, 8] },
+  { delay = 30 },
+  { press = [3, 4] },
+  { delay = 30 },
+  { tap = { pos = [1, 3], duration = 30 } },
+  { delay = 30 },
+  { release = [3, 4] },
+  { delay = 30 },
+  { release = [1, 8] },
+]
+expect = [["RGui"], ["RGui", "Tab"], ["RGui"], []]
