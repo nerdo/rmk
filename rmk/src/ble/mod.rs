@@ -731,6 +731,27 @@ async fn disconnect(conn: &GattConnection<'_, '_, DefaultPacketPool>) {
     while !matches!(conn.next().await, GattConnectionEvent::Disconnected { .. }) {}
 }
 
+/// A connection parameter request: interval, max latency, supervision timeout.
+type ConnParamRequest = (Duration, u16, Duration);
+
+/// The connection parameters the keyboard asks a host for, in order, 5 s
+/// apart. None for the dongle link: the dongle sets its own when it connects
+/// (7.5 ms, `dongle/mod.rs`), and asking for 15 ms first only slowed the link
+/// for 5 s after each connection.
+fn conn_param_requests(dongle_link: bool) -> &'static [ConnParamRequest] {
+    if dongle_link {
+        return &[];
+    }
+    const HOST: [ConnParamRequest; 2] = [
+        // The first request is what Apple devices accept:
+        // https://developer.apple.com/accessories/Accessory-Design-Guidelines.pdf
+        (Duration::from_millis(15), 30, Duration::from_secs(6)),
+        // The second request is for best performance
+        (Duration::from_micros(7500), 60, Duration::from_secs(6)),
+    ];
+    &HOST
+}
+
 /// Set keyboard <-> host connection parameters
 pub(crate) async fn set_conn_params<
     'a,
@@ -740,16 +761,9 @@ pub(crate) async fn set_conn_params<
 >(
     stack: &Stack<'_, C, P>,
     conn: &GattConnection<'a, 'b, P>,
+    dongle_link: bool,
 ) {
-    let requests = [
-        // The first request is what Apple devices accept:
-        // https://developer.apple.com/accessories/Accessory-Design-Guidelines.pdf
-        (Duration::from_millis(15), 30, Duration::from_secs(6)),
-        // The second request is for best performance
-        (Duration::from_micros(7500), 60, Duration::from_secs(6)),
-    ];
-
-    for (interval, max_latency, supervision_timeout) in requests {
+    for &(interval, max_latency, supervision_timeout) in conn_param_requests(dongle_link) {
         // Wait 5 seconds before each request to avoid connection drop
         embassy_time::Timer::after_secs(5).await;
 
@@ -827,7 +841,7 @@ async fn serve_keyboard_connection<
     let communication_task = async {
         if let Either3::First(e) = select3(
             gatt_events_task(server, conn),
-            set_conn_params(stack, conn),
+            set_conn_params(stack, conn, dongle_link),
             battery_task,
         )
         .await
@@ -954,6 +968,30 @@ pub(crate) async fn update_conn_params<
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
+
+    // Spec: the user (2026-11-08): typing through the dongle is "fine when
+    // plugged into the usb cable, there is a delay during renegotiation i
+    // think". The dongle sets the link's parameters when it connects
+    // (dongle/mod.rs: 7.5 ms, no latency), and a request from the keyboard
+    // only renegotiates them.
+    mod conn_params {
+        use embassy_time::Duration;
+
+        use super::super::conn_param_requests;
+
+        // "A computer is asked for 15 ms, then 7.5 ms."
+        #[test]
+        fn a_computer_is_asked_for_15_then_7_5_ms() {
+            let intervals: Vec<Duration> = conn_param_requests(false).iter().map(|r| r.0).collect();
+            assert_eq!(intervals, [Duration::from_millis(15), Duration::from_micros(7500)]);
+        }
+
+        // "The dongle link is never renegotiated."
+        #[test]
+        fn the_dongle_link_is_never_renegotiated() {
+            assert!(conn_param_requests(true).is_empty());
+        }
+    }
 
     use embassy_futures::join::join;
     use embassy_futures::select::select;
