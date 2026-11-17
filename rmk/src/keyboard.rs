@@ -559,7 +559,7 @@ impl<'a> Keyboard<'a> {
                                 };
                                 debug!("Pattern after unilateral tap or flow tap: {:?}", pattern);
                                 let action = Self::action_from_pattern(self.keymap, &held_key.action, pattern);
-                                self.press_morse_resolution(action, held_key.event, held_key.registered)
+                                self.press_morse_resolution(action, held_key.event, held_key.pressed_before_resolved)
                                     .await;
                                 held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                 // Push back after triggered tap
@@ -602,8 +602,12 @@ impl<'a> Keyboard<'a> {
                                     keyboard_state_updated = true;
                                     debug!("pattern after permissive hold: {:?}", pattern);
                                     let action = Self::action_from_pattern(self.keymap, &action, pattern);
-                                    self.press_morse_resolution(action, held_key.event, held_key.registered)
-                                        .await;
+                                    self.press_morse_resolution(
+                                        action,
+                                        held_key.event,
+                                        held_key.pressed_before_resolved,
+                                    )
+                                    .await;
                                     held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                     // Push back after triggered hold
                                     self.held_buffer.push_without_sort(held_key);
@@ -612,7 +616,7 @@ impl<'a> Keyboard<'a> {
                                     debug!("pattern after released, permissive hold: {:?}", pattern);
                                     let action = Self::action_from_pattern(self.keymap, &action, pattern);
                                     held_key.event.pressed = true;
-                                    self.tap_morse_resolution(action, held_key.event, held_key.registered)
+                                    self.tap_morse_resolution(action, held_key.event, held_key.pressed_before_resolved)
                                         .await;
                                     // The tap is fully fired, don't push it back to buffer again
                                     // Removing from the held buffer is like setting to an idle state
@@ -672,8 +676,12 @@ impl<'a> Keyboard<'a> {
                                         && !defer_for_quick_tap
                                     {
                                         debug!("tap prediction {:?} -> {:?}", pattern, action);
-                                        self.press_morse_resolution(action, held_key.event, held_key.registered)
-                                            .await;
+                                        self.press_morse_resolution(
+                                            action,
+                                            held_key.event,
+                                            held_key.pressed_before_resolved,
+                                        )
+                                        .await;
                                         held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                         resolved = true;
                                     }

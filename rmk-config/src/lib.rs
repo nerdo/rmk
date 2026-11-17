@@ -846,7 +846,7 @@ pub(crate) struct MorseProfile {
 
     pub quick_tap_timeout: Option<DurationMillis>,
 
-    pub register_before_resolved: Option<bool>,
+    pub press_before_resolved: Option<bool>,
 }
 
 /// Configurations for tri layer
@@ -962,7 +962,7 @@ pub(crate) struct MorsesConfig {
 
     pub quick_tap_timeout: Option<DurationMillis>,
 
-    pub register_before_resolved: Option<bool>,
+    pub press_before_resolved: Option<bool>,
 
     /// these can be used to overrides the defaults given above
     pub profiles: Option<HashMap<String, MorseProfile>>,

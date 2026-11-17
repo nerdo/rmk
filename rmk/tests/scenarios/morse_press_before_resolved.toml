@@ -1,11 +1,11 @@
-# Morse keys whose profile sets `register_before_resolved`.
+# Morse keys whose profile sets `press_before_resolved`.
 #
 # The fixture is the shared split board's TD(0)@(1,2), set up the way a
 # keyboard with a Caps Word shift binds it: tap or hold for shift, double tap
 # for Caps Word. A@(1,0) is the plain key typed against it.
 #
 # The tap dance waits 350 ms for a second tap. With the setting on, a press
-# whose tap and hold give the same action registers that action at once
+# whose tap and hold give the same action presses that action at once
 # instead of waiting for the pattern to resolve.
 
 keyboard = "boards/split.toml"
@@ -15,7 +15,7 @@ unilateral_tap = false
 hold_on_other_press = true
 hold_timeout = "350ms"
 gap_timeout = "350ms"
-register_before_resolved = true
+press_before_resolved = true
 
 [[behavior.morse.morses]]
 tap_actions = ["LShift", "CapsWordToggle"]

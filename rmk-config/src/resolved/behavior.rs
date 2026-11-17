@@ -98,7 +98,7 @@ pub struct MorseProfile {
     pub hold_timeout_ms: Option<u64>,
     pub gap_timeout_ms: Option<u64>,
     pub quick_tap_timeout_ms: Option<u64>,
-    pub register_before_resolved: Option<bool>,
+    pub press_before_resolved: Option<bool>,
 }
 
 pub struct MorseKey {
@@ -193,7 +193,7 @@ impl crate::KeyboardTomlConfig {
                 hold_timeout_ms: Some(m.hold_timeout.as_ref().map(|t| t.0).unwrap_or(250)),
                 gap_timeout_ms: Some(m.gap_timeout.as_ref().map(|t| t.0).unwrap_or(250)),
                 quick_tap_timeout_ms: m.quick_tap_timeout.as_ref().map(|t| t.0),
-                register_before_resolved: m.register_before_resolved,
+                press_before_resolved: m.press_before_resolved,
             };
 
             let morses = m
@@ -291,7 +291,7 @@ fn resolve_morse_profile(p: &crate::MorseProfile) -> MorseProfile {
         hold_timeout_ms: p.hold_timeout.as_ref().map(|t| t.0),
         gap_timeout_ms: p.gap_timeout.as_ref().map(|t| t.0),
         quick_tap_timeout_ms: p.quick_tap_timeout.as_ref().map(|t| t.0),
-        register_before_resolved: p.register_before_resolved,
+        press_before_resolved: p.press_before_resolved,
     }
 }
 
@@ -303,7 +303,7 @@ mod tests {
     use crate::KeyboardTomlConfig;
 
     #[test]
-    fn morse_profiles_resolve_the_register_before_resolved_they_set() {
+    fn morse_profiles_resolve_the_press_before_resolved_they_set() {
         let toml = r#"
 [layout]
 rows = 1
@@ -317,13 +317,13 @@ layers = 1
 keys = "A"
 
 [behavior.morse]
-register_before_resolved = true
+press_before_resolved = true
 
 [behavior.morse.profiles.on]
-register_before_resolved = true
+press_before_resolved = true
 
 [behavior.morse.profiles.off]
-register_before_resolved = false
+press_before_resolved = false
 
 [behavior.morse.profiles.inherit]
 hold_timeout = "200ms"
@@ -331,7 +331,7 @@ hold_timeout = "200ms"
 
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "rmk-config-register-before-resolved-{}-{}.toml",
+            "rmk-config-press-before-resolved-{}-{}.toml",
             std::process::id(),
             unique
         ));
@@ -342,10 +342,10 @@ hold_timeout = "200ms"
 
         let morse = config.behavior().unwrap().morse.unwrap();
         let resolved = [
-            morse.default_profile.register_before_resolved,
-            morse.profiles["on"].register_before_resolved,
-            morse.profiles["off"].register_before_resolved,
-            morse.profiles["inherit"].register_before_resolved,
+            morse.default_profile.press_before_resolved,
+            morse.profiles["on"].press_before_resolved,
+            morse.profiles["off"].press_before_resolved,
+            morse.profiles["inherit"].press_before_resolved,
         ];
         assert_eq!(resolved, [Some(true), Some(true), Some(false), None]);
     }
