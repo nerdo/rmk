@@ -38,11 +38,12 @@ pub enum MorseMode {
 ///
 /// Bit layout of the inner `u64`:
 /// ```text
-/// 63        46 | 45      | 44           32 | 31  30 | 29       17 | 16  15 | 14  13   | 12       0
-/// reserved     | qt_set  | quick_tap_tm    | mode   | gap_timeout | uni_tap| flow_tap | hold_timeout
-///   (18b)      |  (1b)   |   (13b ms)      |  (2b)  |   (13b ms)  |  (2b)  |   (2b)   |  (13b ms)
+/// 63      48 | 47  46  | 45     | 44         32 | 31  30 | 29       17 | 16  15 | 14  13   | 12       0
+/// reserved   | reg_bfr | qt_set | quick_tap_tm  | mode   | gap_timeout | uni_tap| flow_tap | hold_timeout
+///   (16b)    |  (2b)   |  (1b)  |   (13b ms)    |  (2b)  |   (13b ms)  |  (2b)  |   (2b)   |  (13b ms)
 /// ```
 ///
+/// - `reg_bfr` (bits 47-46): register before resolved, `00`/`01` = None, `10` = Some(false), `11` = Some(true)
 /// - `qt_set` (bit 45): when set, `quick_tap_timeout` is explicitly configured
 ///   (even if 0, which means "disabled"). When clear, the field is unset and
 ///   callers should fall back to the global default.
@@ -70,6 +71,8 @@ const FLOW_TAP_MASK: u64 = FLOW_TAP_LOW_BIT | FLOW_TAP_HIGH_BIT;
 const MODE_MASK: u64 = 0xC000_0000;
 const QT_VALUE_MASK: u64 = TIMEOUT_MASK << 32;
 const QT_SET_BIT: u64 = 1 << 45;
+const REGISTER_BEFORE_RESOLVED_HIGH_BIT: u64 = 1 << 47;
+const REGISTER_BEFORE_RESOLVED_MASK: u64 = (1 << 46) | REGISTER_BEFORE_RESOLVED_HIGH_BIT;
 
 const fn encode_timeout_ms(t: u16) -> u64 {
     if t > TIMEOUT_MAX_MS {
@@ -120,6 +123,27 @@ impl MorseProfile {
                 | match b {
                     Some(true) => FLOW_TAP_MASK,
                     Some(false) => FLOW_TAP_HIGH_BIT,
+                    None => 0,
+                },
+        )
+    }
+
+    /// Register the action a press would give before the morse pattern resolves,
+    /// when that press's tap and hold give the same action.
+    pub fn register_before_resolved(self) -> Option<bool> {
+        match (self.0 & REGISTER_BEFORE_RESOLVED_MASK) >> 46 {
+            3 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    pub const fn with_register_before_resolved(self, b: Option<bool>) -> Self {
+        Self(
+            (self.0 & !REGISTER_BEFORE_RESOLVED_MASK)
+                | match b {
+                    Some(true) => REGISTER_BEFORE_RESOLVED_MASK,
+                    Some(false) => REGISTER_BEFORE_RESOLVED_HIGH_BIT,
                     None => 0,
                 },
         )
@@ -260,6 +284,7 @@ impl Serialize for MorseProfile {
                 hold_timeout_ms: Option<u16>,
                 gap_timeout_ms: Option<u16>,
                 quick_tap_timeout_ms: Option<u16>,
+                register_before_resolved: Option<bool>,
             }
             Repr {
                 unilateral_tap: self.unilateral_tap(),
@@ -268,6 +293,7 @@ impl Serialize for MorseProfile {
                 hold_timeout_ms: self.hold_timeout_ms(),
                 gap_timeout_ms: self.gap_timeout_ms(),
                 quick_tap_timeout_ms: self.quick_tap_timeout_ms(),
+                register_before_resolved: self.register_before_resolved(),
             }
             .serialize(serializer)
         } else {
@@ -287,12 +313,14 @@ impl<'de> Deserialize<'de> for MorseProfile {
                 hold_timeout_ms: Option<u16>,
                 gap_timeout_ms: Option<u16>,
                 quick_tap_timeout_ms: Option<u16>,
+                register_before_resolved: Option<bool>,
             }
             let r = Repr::deserialize(deserializer)?;
             Ok(
                 MorseProfile::new(r.unilateral_tap, r.mode, r.hold_timeout_ms, r.gap_timeout_ms)
                     .with_enable_flow_tap(r.enable_flow_tap)
-                    .with_quick_tap_timeout_ms(r.quick_tap_timeout_ms),
+                    .with_quick_tap_timeout_ms(r.quick_tap_timeout_ms)
+                    .with_register_before_resolved(r.register_before_resolved),
             )
         } else {
             Ok(MorseProfile(u64::deserialize(deserializer)?))
@@ -304,7 +332,7 @@ impl<'de> Deserialize<'de> for MorseProfile {
 #[cfg(feature = "wasm")]
 const _: () = {
     #[::wasm_bindgen::prelude::wasm_bindgen(typescript_custom_section)]
-    const TS_APPEND_CONTENT: &'static str = "export type MorseProfile = { unilateral_tap: boolean | undefined; enable_flow_tap: boolean | undefined; mode: MorseMode | undefined; hold_timeout_ms: number | undefined; gap_timeout_ms: number | undefined; quick_tap_timeout_ms: number | undefined; };";
+    const TS_APPEND_CONTENT: &'static str = "export type MorseProfile = { unilateral_tap: boolean | undefined; enable_flow_tap: boolean | undefined; mode: MorseMode | undefined; hold_timeout_ms: number | undefined; gap_timeout_ms: number | undefined; quick_tap_timeout_ms: number | undefined; register_before_resolved: boolean | undefined; };";
 };
 crate::wasm_object_abi!(MorseProfile, "MorseProfile");
 
@@ -818,6 +846,34 @@ mod tests {
         );
         assert_eq!(profile.unilateral_tap(), Some(true));
         assert_eq!(profile.enable_flow_tap(), Some(true));
+    }
+
+    #[test]
+    fn a_profile_reads_back_the_register_before_resolved_it_was_given_and_keeps_its_other_fields() {
+        let base = MorseProfile::new(Some(true), Some(MorseMode::PermissiveHold), Some(1000), Some(2000))
+            .with_enable_flow_tap(Some(false))
+            .with_quick_tap_timeout_ms(Some(120));
+
+        let read_back = [None, Some(true), Some(false)]
+            .map(|setting| base.with_register_before_resolved(setting))
+            .map(|p| {
+                (
+                    p.register_before_resolved(),
+                    p.with_register_before_resolved(None) == base,
+                )
+            });
+
+        assert_eq!(read_back, [(None, true), (Some(true), true), (Some(false), true)]);
+    }
+
+    #[test]
+    fn a_profile_written_as_text_reads_back_its_register_before_resolved() {
+        let profile = MorseProfile::const_default().with_register_before_resolved(Some(true));
+
+        let text = toml::to_string(&profile).unwrap();
+        let read_back: MorseProfile = toml::from_str(&text).unwrap();
+
+        assert_eq!(read_back.register_before_resolved(), Some(true), "written as:\n{text}");
     }
 
     #[test]
