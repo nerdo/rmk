@@ -1,5 +1,6 @@
 use embassy_time::{Duration, Instant};
 use rmk_types::action::{Action, KeyAction};
+use rmk_types::keycode::KeyCode;
 use rmk_types::morse::{HOLD, MorseMode, MorsePattern, TAP};
 
 use crate::event::KeyboardEvent;
@@ -22,7 +23,7 @@ impl<'a> Keyboard<'a> {
                 let final_action = Self::try_predict_final_action(self.keymap, &key.action, pattern);
                 if let Some(action) = final_action {
                     debug!("hold prediction {:?} -> {:?}", pattern, action);
-                    self.process_key_action_normal(action, key.event).await;
+                    self.press_morse_resolution(action, key.event, key.registered).await;
                     if let Some(k) = self.held_buffer.find_pos_mut(key.event.pos) {
                         k.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                     }
@@ -37,7 +38,7 @@ impl<'a> Keyboard<'a> {
             KeyState::Released(pattern) => {
                 // The time since the key release is longer than the timeout, trigger the action
                 let action = Self::action_from_pattern(self.keymap, &key.action, pattern);
-                self.process_key_action_tap(action, key.event).await;
+                self.tap_morse_resolution(action, key.event, key.registered).await;
                 let _ = self.held_buffer.remove(key.event.pos);
             }
             KeyState::EarlyFired(_) => {
@@ -91,22 +92,27 @@ impl<'a> Keyboard<'a> {
                                 }
                             }
 
+                            let registered = Self::action_to_register_before_resolved(self.keymap, key_action, pattern);
                             k.state = KeyState::Pressed(pattern);
                             k.press_time = event_time;
                             k.timeout_time = timeout_time;
+                            k.registered = registered;
+                            if let Some(action) = registered {
+                                self.press_registered_action(action, event).await;
+                            }
                         }
                         _ => {}
                     }
                 }
                 None => {
-                    // Add to buffer
-                    self.held_buffer.push(HeldKey::new(
-                        event,
-                        *key_action,
-                        KeyState::Pressed(MorsePattern::default()),
-                        event_time,
-                        timeout_time,
-                    ));
+                    let pattern = MorsePattern::default();
+                    let mut key =
+                        HeldKey::new(event, *key_action, KeyState::Pressed(pattern), event_time, timeout_time);
+                    key.registered = Self::action_to_register_before_resolved(self.keymap, key_action, pattern);
+                    self.held_buffer.push(key);
+                    if let Some(action) = key.registered {
+                        self.press_registered_action(action, event).await;
+                    }
                 }
             }
         } else {
@@ -117,6 +123,12 @@ impl<'a> Keyboard<'a> {
                 debug!("Releasing morse key: {:?}", k);
                 match k.state {
                     KeyState::Pressed(pattern) => {
+                        if let Some(action) = k.registered {
+                            self.process_key_action_normal(action, event).await;
+                        }
+                        let Some(k) = self.held_buffer.find_pos_mut(event.pos) else {
+                            return;
+                        };
                         let released_time = Instant::now(); // TODO? It would be better if the event would carry the real timestamp of the release event!
 
                         let hold = released_time >= k.timeout_time;
@@ -157,10 +169,11 @@ impl<'a> Keyboard<'a> {
                             && let Some(window) = Self::quick_tap_window(self.keymap, &k.action)
                         {
                             let stashed_action = k.action;
+                            let registered = k.registered;
                             debug!("Stash for quick-tap, fire {:?} immediately", action);
                             let mut press_event = event;
                             press_event.pressed = true;
-                            self.process_key_action_tap(action, press_event).await;
+                            self.tap_morse_resolution(action, press_event, registered).await;
                             let gap = Self::morse_timeout(self.keymap, &stashed_action, false);
                             let keep_alive = gap.max(window);
                             if let Some(k) = self.held_buffer.find_pos_mut(event.pos) {
@@ -196,13 +209,14 @@ impl<'a> Keyboard<'a> {
                             k.press_time = released_time; // Use release time as the "press_time"
                             let timeout = Self::morse_timeout(self.keymap, &k.action, false);
                             k.timeout_time = k.press_time + timeout;
+                            let registered = k.registered;
 
                             // Fire the tap immediately if the hold continuation has the same action
                             if let Some(action) = early_action {
                                 debug!("Early fire {:?} -> {:?}", pattern, action);
                                 let mut press_event = event;
                                 press_event.pressed = true;
-                                self.process_key_action_tap(action, press_event).await;
+                                self.tap_morse_resolution(action, press_event, registered).await;
                                 // Mark as early-fired so fire_held_keys won't re-fire
                                 if let Some(k) = self.held_buffer.find_pos_mut(event.pos) {
                                     k.state = KeyState::EarlyFired(pattern);
@@ -257,6 +271,55 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// Presses an action a morse key registers before its pattern resolves.
+    /// Caps Word stays as it was, because the pattern has not decided this
+    /// press yet: a double tap that turns Caps Word off starts with one.
+    async fn press_registered_action(&mut self, action: Action, event: KeyboardEvent) {
+        let caps_word = self.caps_word;
+        self.process_key_action_normal(action, event).await;
+        self.caps_word = caps_word;
+        crate::keyboard::status::set_caps_word_until(self.caps_word.until());
+    }
+
+    /// Presses the action a morse key resolved to, unless the key already
+    /// registered that action before it resolved.
+    pub(crate) async fn press_morse_resolution(
+        &mut self,
+        action: Action,
+        event: KeyboardEvent,
+        registered: Option<Action>,
+    ) {
+        if registered == Some(action) {
+            self.decide_registered_action_for_caps_word(action);
+        } else {
+            self.process_key_action_normal(action, event).await;
+        }
+    }
+
+    /// Taps the action a morse key resolved to, unless the key already
+    /// registered that action before it resolved.
+    pub(crate) async fn tap_morse_resolution(
+        &mut self,
+        action: Action,
+        event: KeyboardEvent,
+        registered: Option<Action>,
+    ) {
+        if registered == Some(action) {
+            self.decide_registered_action_for_caps_word(action);
+        } else {
+            self.process_key_action_tap(action, event).await;
+        }
+    }
+
+    /// Lets Caps Word see a registered key once the pattern decides it, as it
+    /// would have seen the key had it waited for the pattern.
+    fn decide_registered_action_for_caps_word(&mut self, action: Action) {
+        if let Action::Key(KeyCode::Hid(key)) = action {
+            self.caps_word.check(key);
+            crate::keyboard::status::set_caps_word_until(self.caps_word.until());
+        }
+    }
+
     pub(crate) async fn fire_held_non_morse_keys(&mut self) {
         self.held_buffer.keys.sort_unstable_by_key(|k| k.press_time);
 
@@ -297,6 +360,32 @@ impl<'a> Keyboard<'a> {
                 .unwrap_or(Action::No),
             _ => Action::No,
         }
+    }
+
+    /// The action a press of a morse key sends before its pattern resolves:
+    /// the one its tap and its hold would both give, when the key's profile
+    /// sets `register_before_resolved`. `pattern` is what came before the press.
+    fn action_to_register_before_resolved(
+        keymap: &KeyMap,
+        key_action: &KeyAction,
+        pattern: MorsePattern,
+    ) -> Option<Action> {
+        let per_key = match key_action {
+            KeyAction::TapHold(_, _, idx) => keymap.morse_profile(*idx).register_before_resolved(),
+            KeyAction::Morse(idx) => keymap
+                .get_morse(*idx as usize)
+                .and_then(|morse| morse.profile.register_before_resolved()),
+            _ => None,
+        };
+        if !per_key
+            .or_else(|| keymap.morse_default_profile().register_before_resolved())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let tap = Self::action_from_pattern(keymap, key_action, pattern.followed_by_tap());
+        let hold = Self::action_from_pattern(keymap, key_action, pattern.followed_by_hold());
+        (tap == hold && tap != Action::No).then_some(tap)
     }
 
     pub fn quick_tap_window(keymap: &KeyMap, key_action: &KeyAction) -> Option<Duration> {

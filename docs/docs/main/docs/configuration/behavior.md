@@ -248,6 +248,10 @@ A profile contains the following fields:
 - `quick_tap_timeout`: If the same morse/tap-hold key is pressed again within this window after its last release, the tap action fires immediately on press and stays held while the key is held. This lets the OS auto-repeat the tap action instead of triggering the hold action. Disabled by default. Maximum 8191ms (13-bit field).
   - Setting `quick_tap_timeout = "0ms"` explicitly disables quick-tap for that profile, even if a non-zero global default is configured. This lets you opt out on a per-profile basis. Omitting the field entirely causes the profile to inherit the global default.
   - A re-press within the window resolves as a tap even if a `double_tap` action is configured, so double-tapping faster than `quick_tap_timeout` produces two taps instead of the `double_tap` action.
+- `register_before_resolved`: Sends a press's action at once, before the morse pattern resolves, when the tap and the hold of that press give the same action. Releasing the key releases the action, and the pattern does not send it again when it resolves. Defaults to `false`. Omitting it inherits the global value.
+  - For example, a shift key with `tap_actions = ["LShift", "CapsWordToggle"]` and `hold_actions = ["LShift"]` sends shift as soon as you press it, and a double tap still turns on Caps Word. The first tap of the double tap sends shift down and up.
+  - A press whose tap and hold differ, such as `tap = "A"` and `hold = "B"`, waits for the pattern as before.
+  - The early press does not end Caps Word. Caps Word sees the key only when the pattern resolves to it.
 
 #### Default profile for Morse/TapDance/TapHold
 

@@ -1,0 +1,169 @@
+# Morse keys whose profile sets `register_before_resolved`.
+#
+# The fixture is the shared split board's TD(0)@(1,2), set up the way a
+# keyboard with a Caps Word shift binds it: tap or hold for shift, double tap
+# for Caps Word. A@(1,0) is the plain key typed against it.
+#
+# The tap dance waits 350 ms for a second tap. With the setting on, a press
+# whose tap and hold give the same action registers that action at once
+# instead of waiting for the pattern to resolve.
+
+keyboard = "boards/split.toml"
+
+[behavior.morse]
+unilateral_tap = false
+hold_on_other_press = true
+hold_timeout = "350ms"
+gap_timeout = "350ms"
+register_before_resolved = true
+
+[[behavior.morse.morses]]
+tap_actions = ["LShift", "CapsWordToggle"]
+hold_actions = ["LShift"]
+
+[[test]]
+name = "the_first_tap_of_a_double_tap_sends_shift_before_caps_word_turns_on"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { tap = { pos = [1, 0], duration = 10 } },
+]
+expect = [["LShift"], [], ["LShift", "A"], []]
+
+[[test]]
+name = "a_single_tap_sends_one_shift_press_and_release"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 400 },
+]
+expect = [["LShift"], []]
+
+[[test]]
+name = "holding_past_the_hold_timeout_keeps_one_shift_press_until_release"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 500 } },
+]
+expect = [["LShift"], []]
+
+[[test]]
+name = "holding_shift_while_typing_a_letter_shifts_it_with_one_shift_press"
+steps = [
+  { delay = 150 },
+  { press = [1, 2] },
+  { delay = 50 },
+  { tap = { pos = [1, 0], duration = 10 } },
+  { release = [1, 2] },
+]
+expect = [["LShift"], ["LShift", "A"], ["LShift"], []]
+
+[[test]]
+name = "a_letter_typed_right_after_a_single_tap_is_not_shifted"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 0], duration = 10 } },
+]
+expect = [["LShift"], [], ["A"], []]
+
+[[test]]
+name = "a_second_double_tap_turns_caps_word_off"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { tap = { pos = [1, 0], duration = 10 } },
+]
+expect = [["LShift"], [], ["LShift"], [], ["A"], []]
+
+# A plain shift key ends Caps Word, and so does this one once its tap resolves.
+[[test]]
+name = "a_single_tap_while_caps_word_is_on_turns_caps_word_off"
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 400 },
+  { tap = { pos = [1, 0], duration = 10 } },
+]
+expect = [["LShift"], [], ["LShift"], [], ["A"], []]
+
+# A@(1,0) is on the same hand as TD(0)@(1,2), so pressing it decides a tap.
+[[test]]
+name = "a_same_hand_letter_deciding_a_unilateral_tap_is_shifted_by_one_shift_press"
+behavior.morse = { unilateral_tap = true, hold_on_other_press = false }
+steps = [
+  { delay = 150 },
+  { press = [1, 2] },
+  { delay = 50 },
+  { tap = { pos = [1, 0], duration = 10 } },
+  { release = [1, 2] },
+]
+expect = [["LShift"], ["LShift", "A"], ["LShift"], []]
+
+[[test]]
+name = "a_same_hand_letter_right_after_a_single_tap_is_not_shifted"
+behavior.morse = { unilateral_tap = true, hold_on_other_press = false }
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 100 },
+  { tap = { pos = [1, 0], duration = 10 } },
+  { delay = 400 },
+]
+expect = [["LShift"], [], ["A"], []]
+
+# Nothing can follow the tap, so its release decides the key.
+[[test]]
+name = "a_tap_that_its_release_decides_sends_one_shift_press_and_release"
+behavior.morse = { morses = [{ tap = "LShift", hold = "LShift" }] }
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 400 },
+]
+expect = [["LShift"], []]
+
+# A quick-tap window makes the release fire the tap at once.
+[[test]]
+name = "a_tap_with_a_quick_tap_window_sends_one_shift_press_and_release"
+behavior.morse = { quick_tap_timeout = "200ms", morses = [{ tap = "LShift", hold = "LShift" }] }
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 400 },
+]
+expect = [["LShift"], []]
+
+# Hold after tap repeats the tap, so the tap fires early on release.
+[[test]]
+name = "a_tap_that_fires_early_sends_one_shift_press_and_release"
+behavior.morse = { morses = [{ tap = "LShift", hold = "LShift", hold_after_tap = "LShift" }] }
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 50 } },
+  { delay = 400 },
+]
+expect = [["LShift"], []]
+
+# Its tap and hold differ, so the press cannot tell which to send yet.
+[[test]]
+name = "holding_a_key_whose_tap_and_hold_differ_sends_only_its_hold"
+behavior.morse = { morses = [{ tap = "A", hold = "B", double_tap = "C" }] }
+steps = [
+  { delay = 150 },
+  { tap = { pos = [1, 2], duration = 500 } },
+]
+expect = [["B"], []]

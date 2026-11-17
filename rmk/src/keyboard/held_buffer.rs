@@ -133,6 +133,8 @@ pub struct HeldKey {
     pub press_time: Instant,
     /// The timeout time for the key
     pub timeout_time: Instant,
+    /// The action a morse key sent the press of before its pattern resolved.
+    pub registered: Option<Action>,
 }
 
 impl HeldKey {
@@ -149,6 +151,7 @@ impl HeldKey {
             state,
             press_time,
             timeout_time,
+            registered: None,
         }
     }
 }

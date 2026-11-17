@@ -66,7 +66,7 @@ pub(crate) fn current_led_indicator() -> LedIndicator {
 }
 
 /// State machine for Caps Word
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 enum CapsWordState {
     /// Caps Word is activated (but may have timed out thus becoming inactive)
     Activated {
@@ -559,7 +559,8 @@ impl<'a> Keyboard<'a> {
                                 };
                                 debug!("Pattern after unilateral tap or flow tap: {:?}", pattern);
                                 let action = Self::action_from_pattern(self.keymap, &held_key.action, pattern);
-                                self.process_key_action_normal(action, held_key.event).await;
+                                self.press_morse_resolution(action, held_key.event, held_key.registered)
+                                    .await;
                                 held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                 // Push back after triggered tap
                                 self.held_buffer.push_without_sort(held_key);
@@ -601,7 +602,8 @@ impl<'a> Keyboard<'a> {
                                     keyboard_state_updated = true;
                                     debug!("pattern after permissive hold: {:?}", pattern);
                                     let action = Self::action_from_pattern(self.keymap, &action, pattern);
-                                    self.process_key_action_normal(action, held_key.event).await;
+                                    self.press_morse_resolution(action, held_key.event, held_key.registered)
+                                        .await;
                                     held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                     // Push back after triggered hold
                                     self.held_buffer.push_without_sort(held_key);
@@ -610,7 +612,8 @@ impl<'a> Keyboard<'a> {
                                     debug!("pattern after released, permissive hold: {:?}", pattern);
                                     let action = Self::action_from_pattern(self.keymap, &action, pattern);
                                     held_key.event.pressed = true;
-                                    self.process_key_action_tap(action, held_key.event).await;
+                                    self.tap_morse_resolution(action, held_key.event, held_key.registered)
+                                        .await;
                                     // The tap is fully fired, don't push it back to buffer again
                                     // Removing from the held buffer is like setting to an idle state
                                 }
@@ -669,7 +672,8 @@ impl<'a> Keyboard<'a> {
                                         && !defer_for_quick_tap
                                     {
                                         debug!("tap prediction {:?} -> {:?}", pattern, action);
-                                        self.process_key_action_normal(action, held_key.event).await;
+                                        self.press_morse_resolution(action, held_key.event, held_key.registered)
+                                            .await;
                                         held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                         resolved = true;
                                     }
